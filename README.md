@@ -13,10 +13,10 @@ This is a WebRTC signaling server for VideoWhisper HTML5 Videochat. It's built i
 * Run `npm update` in folder to get dependencies 
 * Get a certificate with CRT & KEY files for SSL
 * Get a TURN server for relaying (not required for intranet testing)
-* Install PM2 `npm install pm2 -g`
+* Install PM2 `npm install pm2 -g`, configure startup options `pm2 startup`
 * Configure ecosystem.config.js (path to certificate files, turn server address)
 * Development: `pm2 start ecosystem.config.js --env development --watch --attach --ignore-watch="node_modules/*"`
-* Production: `pm2 start ecosystem.config.js --env production --startup systemd`
+* Production: `pm2 start ecosystem.config.js --env production`
 * Troubleshooting: For troubleshooting purposes configure directly server.js and run from folder with `npm start`
 
 ### Configure HTML5 Videochat
@@ -42,8 +42,8 @@ Server currently implements these GET requests:
 
 ### Commercial Services
 [Consult VideoWhisper](https://consult.videowhisper.com/) for:
+* Turnkey Setups
 * Technical Support
-* Turnkey Platform Solutions
 * Hosting (WebRTC Signaling, WowzaSE, TURN, Webhosting cPanel & WordPress)
 * Custom Development
 * Commercial Solutions
