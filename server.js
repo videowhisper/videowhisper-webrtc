@@ -2,7 +2,7 @@
 
 //CONFIGURATION
 const PORT = process.env.PORT || 3000; //port to listen on
-const TOKEN = process.env.TOKEN || "YourToken"; //token to authenticate
+const TOKEN = process.env.TOKEN || "SecretToken"; //token to authenticate
 const DEVMODE = ( process.env.NODE_ENV || "development" ) === "development"; //development mode
 const CERTIFICATE = process.env.CERTIFICATE || "/path/to/certificate/filenames"; //certificate files (.key and .crt)
 const TURN_SERVER = process.env.TURN_SERVER || "coturn.yourdomain.com:port"; //i.e. coturn server
@@ -59,11 +59,14 @@ app.get("/", (req, res) => {
 res.json({ "server": "VideoWhisper WebRTC",  "version": SERVER_VERSION, "features": SERVER_FEATURES });
 });
 
-//[GET] https://yourDomain:PORT/connections
-app.get("/connections", (req, res) => {
-    if (DEVMODE) console.log("API /connections", connections );
-  res.json(Object.values(connections));
-});
+if (DEVMODE)
+{
+  //[GET] https://yourDomain:PORT/connections
+  app.get("/connections", (req, res) => {
+      if (DEVMODE) console.log("API /connections", connections );
+    res.json(Object.values(connections));
+  });
+}
 
 // AUTHENTICATION MIDDLEWARE
 io.use((socket, next) => {
