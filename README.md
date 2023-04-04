@@ -22,7 +22,7 @@ This is a WebRTC signaling server for VideoWhisper HTML5 Videochat. It's built i
 ### Configure HTML5 Videochat
 You will need the signaling server address, based on certificate and port you configured, like wss://yourdomain.com:3000 and the SecretToken you configured. 
 
-For [Paid Videochat](https://paidvideochat/) from WebRTC plugin settings select WebRTC Streaming Server : VideoWhisper and fill VideoWhisper Socket Server, VideoWhisper Socket Server Token.
+For [Paid Videochat](https://paidvideochat.com/) from WebRTC plugin settings select WebRTC Streaming Server : VideoWhisper and fill VideoWhisper Socket Server, VideoWhisper Socket Server Token.
 
 For PHP HTML5 Videochat editions [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/) , [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/) , configure `settings.php` :
 
@@ -44,6 +44,6 @@ Server currently implements these GET requests:
 [Consult VideoWhisper](https://consult.videowhisper.com/) for:
 * Technical Support
 * Turnkey Platform Solutions
-* Hosting (WebRTC Signaling, WowzaSE, TURN, Video, Web)
+* Hosting (WebRTC Signaling, WowzaSE, TURN, Webhosting cPanel & WordPress)
 * Custom Development
 * Commercial Solutions
