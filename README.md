@@ -3,8 +3,8 @@
 This is a WebRTC signaling server for VideoWhisper HTML5 Videochat. It's built in NodeJS, supports SSL, TURN/STUN configuration.
 
 ### Live Demos
-[P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
-[Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
+* [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
+* [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 
 
 ### Installation
