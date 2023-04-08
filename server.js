@@ -1,35 +1,64 @@
 //VideoWhisper WebRTC Signaling Server
+const SERVER_VERSION = "2023.04.08";
+const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts";
 
-//CONFIGURATION
-const PORT = process.env.PORT || 3000; //port to listen on
-const TOKEN = process.env.TOKEN || "SecretToken"; //token to authenticate
+//Configuration
+require('dotenv').config();
 const DEVMODE = ( process.env.NODE_ENV || "development" ) === "development"; //development mode
-const CERTIFICATE = process.env.CERTIFICATE || "/path/to/certificate/filenames"; //certificate files (.key and .crt)
-const TURN_SERVER = process.env.TURN_SERVER || "coturn.yourdomain.com:port"; //i.e. coturn server
-const TURN_USER = process.env.TURN_USER || "coturn_user"; //coturn user
-const TURN_PASSWORD = process.env.TURN_PASSWORD || "coturn_password"; //coturn password
 
+console.log("VideoWhisper WebRTC Signaling Server", SERVER_VERSION, SERVER_FEATURES );
 
-//SERVER
-const SERVER_VERSION = "2023.04.04";
-const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat"
-
+//TURN/STUN
+//adjust if using different TURN/STUN servers
 //test TURN/STUN configuration with https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/ and/or https://icetest.info  
-let peerConfig = {
+let peerConfig; 
+if (process.env.COTURN_SERVER) peerConfig = {
   iceServers: [
   {   
-    urls: [ "stun:" + TURN_SERVER ]
+    urls: [ "stun:" + process.env.COTURN_SERVER ]
   }, 
   {   
-    username: TURN_USER,   
-    credential: TURN_PASSWORD,   
+    username: process.env.COTURN_USER,   
+    credential: process.env.COTURN_PASSWORD,   
     urls: [       
-      "turn:" + TURN_SERVER + "?transport=udp",       
-      "turn:" + TURN_SERVER + "?transport=tcp",       
+      "turn:" + process.env.COTURN_SERVER + "?transport=udp",       
+      "turn:" + process.env.COTURN_SERVER + "?transport=tcp",       
      ]
    }
  ]
-}; 
+};
+else peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+console.log(`Peer configuration: ${JSON.stringify(peerConfig)}`);
+
+//Accounts
+let accounts = {};
+
+//If using MySQL, load accounts from the database
+
+if (process.env.DB_HOST)
+{
+const Database = require('./modules/database.js');
+const db = new Database();
+ 
+db.query('SELECT * FROM accounts')
+.then(rows => {
+  accounts = rows.reduce((acc, row) => {
+    const { id, name, token, properties } = row;
+    const props = properties ? JSON.parse(properties) : {};
+    if (token) {
+      acc[token] = { id, name, properties: props };
+    }
+    return acc;
+  }, {});
+  console.log(`Loaded ${Object.keys(accounts).length} account(s) from the database`);
+})
+.catch(err => {
+  console.error('Error loading accounts from the database:', err);
+}).finally(() => {
+  db.close();
+});
+
+}
 
 //WEBRTC SIGNALING SERVER
 const express = require('express');
@@ -41,8 +70,8 @@ const https = require('https');
 
 //i.e. cPanel > SSL/TLS > Certificates > Install : get certificate and key
 const options = {
-  key: fs.readFileSync(CERTIFICATE + '.key'),
-  cert: fs.readFileSync(CERTIFICATE + '.crt')
+  key: fs.readFileSync(process.env.CERTIFICATE  + '.key'),
+  cert: fs.readFileSync(process.env.CERTIFICATE  + '.crt')
 };
 const server = https.createServer(options, app);
 
@@ -69,23 +98,47 @@ if (DEVMODE)
 }
 
 // AUTHENTICATION MIDDLEWARE
-io.use((socket, next) => {
-  const token = socket.handshake.auth.token; // check the auth token provided by the client upon connection
-  if (token === TOKEN) {
-    if (DEVMODE) console.log("Authenticated #", socket.id);
-      next();
-  } else {
-      next(new Error("ERROR: Authentication error", socket));
+const authenticate = (socket, next) => {
+  const token = socket.handshake.auth.token;
+  const staticToken = process.env.STATIC_TOKEN || '';
+
+  if (staticToken) if (token === staticToken) 
+  {
+    socket.account = '_static';
+    if (DEVMODE) console.log ("Authenticated with STATIC_TOKEN #", socket.id);
+    return next();
   }
-});
+
+  if (accounts.length == 0) return next(new Error("ERROR: No static token or accounts configured"));
+
+  const account = accounts[token];
+  if (account) {
+    socket.account = account.name;
+  
+    if (account.properties.suspended) {
+      console.warn(`WARNING: Connection for suspended ${account.name} attempted to connect #`, socket.id);
+      return next(new Error('ERROR: Suspended account'));
+    } else 
+    {
+      if (DEVMODE) console.log (`Authenticated with MySQL account ${account} #`, socket.id);
+      next();
+    }
+  } else {
+    next(new Error("ERROR: Authentication error"));
+  }
+
+};
+io.use(authenticate);
 
 // SIGNALING LOGIC
 io.on("connection", (socket) => {
 
-  if (DEVMODE) console.log("Socket connected #", socket.id);
+  if (DEVMODE) console.log("Socket connected #", socket.id, "from account", socket.account);
 
-  //connections call join
-  socket.on("join", (peerID, channel) => {
+  socket.on("subscribe", (peerID, channel) => {
+  //players call subscribe to channel, to get notified when published
+
+      if (DEVMODE) console.log("socket.on(subscribe", peerID, channel);
 
       if (!channel) channel = 'VideoWhisper';
 
@@ -102,13 +155,13 @@ io.on("connection", (socket) => {
           console.log(`ERROR: ${peerID} is already connected @${channel}`);
           socket.disconnect(true);
       } else {
-        if (DEVMODE) console.log(` ${peerID} joined @${channel}. Total connections in @${channel}: ${Object.keys(connections[channel]).length + 1}`);
+        if (DEVMODE) console.log(` ${peerID} subscribed to @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length + 1}`);
             
           // Add new player peer
           const newPeer = { socketId: socket.id, peerID, type: "player" };
           connections[channel][peerID] = newPeer;
         
-          // Let broadcaster know abouta new peer player (to send offer)
+          // Let broadcaster know about the new peer player (to send offer)
           socket.to(channel).emit("message", {
               type: "peer",
               from: peerID,
@@ -119,7 +172,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("publish", (peerID, channel) => {
-      //called by broadcaster when ready to publish channel (stream)
+      //broadcaster calls publish when ready to publish channel (stream)
 
       if (DEVMODE) console.log("socket.on(publish", peerID, channel);
 
@@ -202,4 +255,5 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // START SERVER
-server.listen(PORT, () => console.log(`Server listening on PORT ${PORT}: VideoWhisper WebRTC v${SERVER_VERSION} \r\n${SERVER_FEATURES}`));
+const PORT = process.env.PORT || 3000; //port to listen on
+server.listen(PORT, () => console.log(`Server listening on PORT ${PORT}`));
