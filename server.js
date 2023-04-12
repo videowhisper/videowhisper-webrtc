@@ -1,12 +1,12 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2023.04.08";
-const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts";
+const SERVER_VERSION = "2023.04.12";
+const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate.";
 
 //Configuration
 require('dotenv').config();
 const DEVMODE = ( process.env.NODE_ENV || "development" ) === "development"; //development mode
 
-console.log("VideoWhisper WebRTC Signaling Server", SERVER_VERSION, SERVER_FEATURES );
+console.log("VideoWhisper WebRTC Signaling Server", SERVER_VERSION, "\r", SERVER_FEATURES );
 
 //TURN/STUN
 //adjust if using different TURN/STUN servers
@@ -30,34 +30,58 @@ if (process.env.COTURN_SERVER) peerConfig = {
 else peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 console.log(`Peer configuration: ${JSON.stringify(peerConfig)}`);
 
-//Accounts
-let accounts = {};
+//Authentication 
+if (process.env.STATIC_TOKEN) console.log("Static token configured", DEVMODE ? process.env.STATIC_TOKEN : ''); else console.log("Static token disabled");
 
-//If using MySQL, load accounts from the database
+//Account database
+var accounts = {};
+let accountsLoaded = false;
 
+//If using MySQL, load accounts & plans from the database
 if (process.env.DB_HOST)
 {
 const Database = require('./modules/database.js');
 const db = new Database();
- 
-db.query('SELECT * FROM accounts')
-.then(rows => {
-  accounts = rows.reduce((acc, row) => {
-    const { id, name, token, properties } = row;
-    const props = properties ? JSON.parse(properties) : {};
-    if (token) {
-      acc[token] = { id, name, properties: props };
-    }
-    return acc;
-  }, {});
-  console.log(`Loaded ${Object.keys(accounts).length} account(s) from the database`);
-})
-.catch(err => {
-  console.error('Error loading accounts from the database:', err);
-}).finally(() => {
-  db.close();
-});
+db.getAccounts()
+  .then(accts => {
+     accounts = accts;
+     accountsLoaded = true;
+  })
+  .catch(err => {
+    console.error('Error loading accounts:', err);
+  });
+}
 
+//Enforce SDP (experimental)
+const transform = require('sdp-transform');
+function enforceSdp(sdp, account) {
+  // Enforce maximum resolution and frame rate
+  const maxResolution = 360; // Example: max 360p
+  const maxFrameRate = 15; // Example: max 15 fps
+  const maxBitrate= 750;
+
+  if (DEVMODE) console.log("transformSdp", account, maxResolution, maxFrameRate, maxBitrate);
+
+  const parsedSdp = transform.parse(sdp);
+  const videoMedia = parsedSdp.media.find(media => media.type === 'video');
+
+	if (videoMedia) {
+    videoMedia.fmtp.forEach((videoFmtp, index) => {
+    const videoCodec = videoMedia.rtp[index].codec;
+    const codecParameters = sdpTransform.parseParams(videoFmtp.config);
+  
+    codecParameters['max-fs'] = maxResolution;
+    codecParameters['max-fr'] = maxFrameRate;
+    codecParameters['max-mbps'] = maxResolution * maxFrameRate; //maximum macroblocks per second
+
+    videoFmtp.config = Object.entries(codecParameters).map(([key, value]) => `${key}=${value}`).join(';');
+
+    // Add bitrate limitation using b=AS attribute
+    videoMedia.bandwidth = [{type: 'AS', limit: maxBitrate}];
+    });
+  }
+
+  return transform.write(parsedSdp);
 }
 
 //WEBRTC SIGNALING SERVER
@@ -81,6 +105,8 @@ io.eio.pingInterval = 5000;  // 5 seconds
 
 // API ENDPOINT TO DISPLAY THE CONNECTION TO THE SIGNALING SERVER
 let connections = {};
+let channels = {};
+let stats = {};
 
 //[GET] https://yourDomain:PORT/
 app.get("/", (req, res) => {
@@ -93,9 +119,23 @@ if (DEVMODE)
   //[GET] https://yourDomain:PORT/connections
   app.get("/connections", (req, res) => {
       if (DEVMODE) console.log("API /connections", connections );
-    res.json(Object.values(connections));
+    res.json(Object.entries(connections));
   });
+
+  //[GET] https://yourDomain:PORT/channels
+  app.get("/channels", (req, res) => {
+      if (DEVMODE) console.log("API /channels", channels );
+    res.json(Object.entries(channels));
+  });
+
+  //[GET] https://yourDomain:PORT/stats
+    app.get("/stats", (req, res) => {
+      if (DEVMODE) console.log("API /stats", stats );
+    res.json(Object.entries(stats));
+  });
+
 }
+
 
 // AUTHENTICATION MIDDLEWARE
 const authenticate = (socket, next) => {
@@ -105,30 +145,79 @@ const authenticate = (socket, next) => {
   if (staticToken) if (token === staticToken) 
   {
     socket.account = '_static';
+    socket.token = staticToken;
+
     if (DEVMODE) console.log ("Authenticated with STATIC_TOKEN #", socket.id);
     return next();
   }
 
-  if (accounts.length == 0) return next(new Error("ERROR: No static token or accounts configured"));
+  if (!accounts) return next(new Error("ERROR: No static token configured or accounts loaded, yet"));
 
   const account = accounts[token];
+
   if (account) {
     socket.account = account.name;
-  
-    if (account.properties.suspended) {
-      console.warn(`WARNING: Connection for suspended ${account.name} attempted to connect #`, socket.id);
-      return next(new Error('ERROR: Suspended account'));
-    } else 
+    socket.token = token;
+
+    if (account.plan.connections) if (stats[account.name]) if (stats[account.name].connections >= account.plan.connections) 
     {
-      if (DEVMODE) console.log (`Authenticated with MySQL account ${account} #`, socket.id);
-      next();
-    }
+      if (DEVMODE) console.warn(`WARNING: Connection limit reached for ${account.name} #`, stats[account.name].connections, socket.id );
+      return next(new Error('ERROR: Connection limit exceeded'));
+    } 
+
+    if (account.plan.totalBitrate) if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate >= account.plan.totalBitrate )
+    {
+      if (DEVMODE) console.warn(`WARNING: Total bitrate limit reached for ${account.name} `, stats[account.name].bitrate, socket.id );
+      return next(new Error('ERROR: Bitrate limit exceeded'));
+    } 
+
+    if (account.properties.suspended) {
+      if (DEVMODE) console.warn(`WARNING: Suspended account ${account.name} `, socket.id);
+      return next(new Error('ERROR: Suspended account'));
+    } 
+
+    //Accept connection
+    if (DEVMODE) console.log (`Authenticated with token from account ${account.name} #`, socket.id);
+    next();
+
+
   } else {
     next(new Error("ERROR: Authentication error"));
   }
 
 };
 io.use(authenticate);
+
+//stats for accounts, channels
+function updateStats()
+{
+
+  let accountStats = {};
+  for (let channel in connections) //for each channel
+  {
+    for (let peerID in connections[channel]) //for each connection
+    {
+      let account = connections[channel][peerID].account;
+      let params = channels[channel] || { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0};
+
+     // if (DEVMODE) console.log("-updateStats ", channel, params);
+
+      if (account in accountStats) 
+      {
+        accountStats[account]['connections']++;
+        accountStats[account]['bitrate']+= params['bitrate'];
+        accountStats[account]['audioBitrate']+= params['audioBitrate'];
+      }
+      else accountStats[account]= { 'connections': 1, 'bitrate': params['bitrate'] , 'audioBitrate': params['audioBitrate'], 'players': 0, 'broadcasters': 0 };
+
+      if (connections[channel][peerID].type == 'player') accountStats[account]['players']++;
+      if (connections[channel][peerID].type == 'broadcaster') accountStats[account]['broadcasters']++;
+    }
+  }
+
+  stats = accountStats;
+  //if (DEVMODE) console.log("updateStats", stats);
+}
 
 // SIGNALING LOGIC
 io.on("connection", (socket) => {
@@ -145,20 +234,51 @@ io.on("connection", (socket) => {
        socket.join(channel);
        if (!(channel in connections)) connections[channel] = {};
 
+      socket.peerID = peerID;
+      socket.channel = channel;
+
       // Make sure that the hostname is unique, if the hostname is already in connections, send an error and disconnect
       if (peerID in connections[channel]) {
           socket.emit("uniquenessError", {
               from: "_channel_",
               to: peerID,
-              message: `${peerID} is already connected to @${channel}.`,
+              message: `${peerID} already in @${channel}.`,
           });
           console.log(`ERROR: ${peerID} is already connected @${channel}`);
           socket.disconnect(true);
       } else {
+
+        //get channel params
+        let params = channels[channel]; 
+        let account = accounts[socket.token];
+
+        if (params && account)
+        {
+          let issues = [];
+
+          if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate + params['bitrate'] + params['audioBitrate'] > account.plan.totalBitrate ) issues.push('totalBitrate' );
+          if (stats[account.name]) if (stats[account.name].conections > account.plan.conections ) issues.push( 'conections' );
+
+          if (issues.length > 0)
+          {
+            if (DEVMODE) console.warn(`WARNING: Subscribe rejected for ${account.name}`, params, account.plan );
+
+            socket.emit("subscribeError", {
+              from: "_server_",
+              to: peerID,
+              message: `Unfit: ${issues.join(', ')}.`,
+          });
+
+            return ;
+
+          }
+
+        }
+
         if (DEVMODE) console.log(` ${peerID} subscribed to @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length + 1}`);
             
           // Add new player peer
-          const newPeer = { socketId: socket.id, peerID, type: "player" };
+          const newPeer = { socketId: socket.id, peerID, type: "player", account: socket.account };
           connections[channel][peerID] = newPeer;
         
           // Let broadcaster know about the new peer player (to send offer)
@@ -169,24 +289,86 @@ io.on("connection", (socket) => {
               peerID: peerID,
               });
       }
+
+      updateStats();
   });
 
-  socket.on("publish", (peerID, channel) => {
+  socket.on("publish", (peerID, channel, params) => {
       //broadcaster calls publish when ready to publish channel (stream)
 
-      if (DEVMODE) console.log("socket.on(publish", peerID, channel);
+      if (DEVMODE) console.log("socket.on(publish", peerID, channel, params);
 
       if (!channel) return;
+
+      if (! (channel in connections) ) connections[channel] = {};
+
+      if (peerID in connections[channel]) {
+        socket.emit("uniquenessError", {
+            from: "_channel_",
+            to: peerID,
+            message: `${peerID} already in @${channel}.`,
+        });
+        console.log(`ERROR: ${peerID} is already connected @${channel}`);
+        socket.disconnect(true);
+     }
+
+      if (params)
+      { 
+         params['publisher'] = peerID;
+         params['time'] = Date.now();
+         let account = accounts[socket.token];
+
+        //for accounts, check if stream parameters are within account plan limits
+         if (account)
+         {
+          if (DEVMODE) console.warn(`socket.on(publish account ${account.name} plan`, account.plan );
+
+          let issues = [];
+          if (account.plan.width) if (params['width'] > account.plan.width) issues.push('width');
+          if (account.plan.height) if (params['height'] > account.plan.height) issues.push('height' );
+          if (account.plan.bitrate) if (params['bitrate'] > account.plan.bitrate) issues.push( 'bitrate' );
+          if (account.plan.frameRate) if (params['frameRate'] > account.plan.frameRate) issues.push('frameRate' );
+          if (account.plan.audioBitrate) if (params['audioBitrate'] > account.plan.audioBitrate) issues.push('audioBitrate' );
+
+          if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate + params['bitrate'] + params['audioBitrate'] > account.plan.totalBitrate ) issues.push('totalBitrate' );
+          if (stats[account.name]) if (stats[account.name].conections > account.plan.conections ) issues.push( 'conections' );
+
+          if (issues.length > 0)
+          {
+            if (DEVMODE) console.warn(`WARNING: Publish rejected for ${account.name}`, params, account.plan );
+
+            socket.emit("publishError", {
+              from: "_server_",
+              to: peerID,
+              message: `Unfit: ${issues.join(', ')}.`,
+          });
+
+            return ;
+
+          }
+
+         }
+
+      }
 
       socket.join(channel); //broadcaster subscribes to receive new peers
       if (!(channel in connections)) connections[channel] = {};
 
+      //save channel params
+      channels[channel] = params ? params : { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0, publisher: peerID};
+
+      socket.peerID = peerID;
+      socket.channel = channel;
+
       // Add new player peer
-      const newPeer = { socketId: socket.id, peerID, type: "broadcaster" };
+      const newPeer = { socketId: socket.id, peerID, type: "broadcaster", account: socket.account };
       connections[channel][peerID] = newPeer;
 
       // Let broadcaster know about current peers (to send offers)
       socket.send({ type: "peers", from: "_channel_", target: peerID, 'peers': Object.values(connections[channel]), 'peerConfig' : peerConfig }); 
+
+      //update stats after publisher joins
+      updateStats();
   });
 
   socket.on("message", (message) => {
@@ -204,6 +386,11 @@ io.on("connection", (socket) => {
     {
         console.log(socket.id, "ERROR socket.on(messagePeer: no channel", socket.rooms);
         return;
+    }
+
+    //sdp transform for descriptions
+    if (process.env.ENFORCE_SDP) if (message.type === 'offer' || message.type === 'answer') {
+      message.content.sdp = enforceSdp(message.content.sdp, socket.account);
     }
 
     if (DEVMODE) console.log('socket.on(messagePeer', message.type, ":", message.from,">", message.target, "@", channel );
@@ -244,6 +431,10 @@ io.on("connection", (socket) => {
         else {
           console.log(socket.id, "has disconnected (unregistered peer from", channel);
        }
+
+       //update live stats after removing connection
+       updateStats();
+
   });
 
 });
