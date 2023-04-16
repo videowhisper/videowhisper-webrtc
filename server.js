@@ -1,6 +1,6 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2023.04.12";
-const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate.";
+const SERVER_VERSION = "2023.04.14";
+const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration.";
 
 //Configuration
 require('dotenv').config();
@@ -114,26 +114,69 @@ app.get("/", (req, res) => {
 res.json({ "server": "VideoWhisper WebRTC",  "version": SERVER_VERSION, "features": SERVER_FEATURES });
 });
 
-if (DEVMODE)
+const API_KEY = process.env.API_KEY;
+if (DEVMODE || API_KEY)
 {
-  //[GET] https://yourDomain:PORT/connections
+  //[GET] https://yourDomain:PORT/connections?apikey=YOUR_API_KEY
   app.get("/connections", (req, res) => {
-      if (DEVMODE) console.log("API /connections", connections );
-    res.json(Object.entries(connections));
+
+      const apikey = req.query.apikey;
+      if (DEVMODE) console.log("API /connections", connections, API_KEY, apikey );
+
+      if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
+      else
+      res.json(Object.entries(connections));
   });
 
-  //[GET] https://yourDomain:PORT/channels
+  //[GET] https://yourDomain:PORT/channels?apikey=YOUR_API_KEY
   app.get("/channels", (req, res) => {
-      if (DEVMODE) console.log("API /channels", channels );
+
+      const apikey = req.query.apikey;
+      if (DEVMODE) console.log("API /channels", channels, API_KEY, apikey );
+
+    if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
+    else
     res.json(Object.entries(channels));
   });
 
-  //[GET] https://yourDomain:PORT/stats
+  //[GET] https://yourDomain:PORT/stats?apikey=YOUR_API_KEY
     app.get("/stats", (req, res) => {
-      if (DEVMODE) console.log("API /stats", stats );
+
+    const apikey = req.query.apikey;
+    if (DEVMODE) console.log("API /stats", stats, API_KEY, apikey );
+
+    if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
+    else
     res.json(Object.entries(stats));
   });
 
+
+  //[GET] https://yourDomain:PORT/update-accounts?apikey=YOUR_API_KEY
+  app.get("/update-accounts", (req, res) => {
+      
+      const apikey = req.query.apikey;
+      if (DEVMODE) console.log("API /update-accounts", API_KEY, apikey );
+  
+      if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
+      else
+      {
+        if (process.env.DB_HOST)
+        {
+          const Database = require('./modules/database.js');
+          const db = new Database();
+          db.getAccounts()
+            .then(accts => {
+              accounts = accts;
+              accountsLoaded = true;
+            })
+            .catch(err => {
+              console.error('Error loading accounts:', err);
+            });
+        }
+  
+        res.json({ "status": "Updating Accounts" });
+      }
+    });
 }
 
 

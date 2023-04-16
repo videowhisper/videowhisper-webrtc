@@ -1,6 +1,6 @@
 ## VideoWhisper WebRTC
 
-This is a WebRTC signaling server for VideoWhisper HTML5 Videochat. It's built in NodeJS, supports SSL, TURN/STUN configuration, authentication with static key or accounts (MySQL).
+This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, that can also be used with new apps. It's built in NodeJS, supports SSL, TURN/STUN configuration, authentication with static key or accounts (MySQL), streaming limitations & plans, API.
 
 ### Live Demos
 * [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
@@ -11,6 +11,10 @@ This is a WebRTC signaling server for VideoWhisper HTML5 Videochat. It's built i
 * Peer configuration for relaying (STUN/TURN)
 * Authentication with static token or accounts (MySQL) with ability to suspend account
 * Limitation plans for accounts (totalBitrate, bitrate, audioBitrate, width, height, frameRate)
+* Integrates with VideoWhisper [Live Support Plugin](https://wordpress.org/plugins/live-support-tickets/) for account registration
+
+### Free Test Account
+To get a free account token for testing, [register your website](https://consult.videowhisper.com/?form=Register) with VideoWhisper.
 
 ### Installation
 * Install NodeJS if not already available on your server (ie. `yum install nodejs`)
@@ -45,9 +49,11 @@ If you implement your own videochat apps, you need to use same functions and log
 ### API
 Server currently implements these GET requests:
 * `https://yourServer.com:3000/` - Shows server version & features
-* `https://yourServer.com:3000/connections/` - Shows current list of connections, in development mode
-* `https://yourServer.com:3000/channels/` - Shows current list of published channels (with streaming parameters like resolution, bitrate), in development mode
-* `https://yourServer.com:3000/stats/` - Shows usage stats by account (number of connections, bitrate), in development mode
+* `https://yourServer.com:3000/connections/?apikey=API_KEY` - Shows current list of connections,
+* `https://yourServer.com:3000/channels/?apikey=API_KEY` - Shows current list of published channels (with streaming parameters like resolution, bitrate)
+* `https://yourServer.com:3000/stats/?apikey=API_KEY` - Shows usage stats by account (number of connections, bitrate)
+* `https://yourDomain:PORT/update-accounts?apikey=API_KEY` - Reloads accounts from MySQL without restarting server (call after adding a new account)
+Configure API_KEY in `.env`. In development mode the apikey parameter is not required.
 
 ### Commercial Services
 [Consult VideoWhisper](https://consult.videowhisper.com/) for:
@@ -58,7 +64,8 @@ Server currently implements these GET requests:
 * Commercial Solutions
 
 ### MySQL Structure
-For managing connections from different accounts (websites, setups) and/or setting limitations, use a MySQL with unique token keys (per account):
+For managing connections from different accounts (websites, setups) and/or setting limitations, use a MySQL with unique token keys (per account).
+
 ```
 DROP TABLE IF EXISTS accounts;
   CREATE TABLE accounts (
@@ -68,9 +75,13 @@ DROP TABLE IF EXISTS accounts;
     properties TEXT NOT NULL,
     planId INT,
     meta TEXT,
+    contactId INT,
+    created INT,
     PRIMARY KEY (id),
     UNIQUE KEY (token), 
-    KEY (planId)
+    KEY (planId),
+    KEY (contactId),
+    KEY (created)
   );
 
   DROP TABLE IF EXISTS plans;
@@ -91,3 +102,23 @@ INSERT INTO accounts (name, token, properties, meta, planId) VALUES ('Suspended 
 INSERT INTO plans (name, properties) VALUES ('Test Plan', '{"connections":2,"totalBitrate":1064,"bitrate":500,"framerate":15,"audioBitrate":32,"width":640,"height":360}');
 ```
 Consider both bitrate and audioBitrate when setting an account limit for totalBitrate. In example 1064 for 2 users with 500 bitrate and 32 audioBitrate.
+
+
+### How does it work?
+To use with own WebRTC streaming application(s) see a brief description below:
+
+Server
+ 1. For each stream server manages a channel with broadcaster & player(s)
+ 2. Players call `subscribe` to register in a channel
+ 3. Broadcaster calls `publish` to register and get players in channel
+ 4. Peers exchange offers, answers, ice candidates with `messagePeer`
+
+Broadcaster
+ 1. For each player, makes a `peerConnection` and creates, sets, sends offer when `peerConnection.onnegotiationneeded`
+ 2. Sends the ice candidate on `peerConnection.onicecandidate`
+ 3. Sets ice candidates received from server with `peerConnection.addIceCandidate`
+
+Player
+ 1. On offer message from server creates `peerConnection`, sets remote description, creates sets, sends answer
+ 2. Sends the ice candidate on `peerConnection.onicecandidate`
+ 3. Sets ice candidates received from server with `peerConnection.addIceCandidate`
