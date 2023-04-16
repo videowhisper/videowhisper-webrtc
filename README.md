@@ -13,8 +13,8 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 * Limitation plans for accounts (totalBitrate, bitrate, audioBitrate, width, height, frameRate)
 * Integrates with VideoWhisper [Live Support Plugin](https://wordpress.org/plugins/live-support-tickets/) for account registration
 
-### Free Test Account
-To get a free account token for testing, [register your website](https://consult.videowhisper.com/?form=Register) with VideoWhisper.
+### Free Server for Testing, Development
+If you want to test with an existing server, [register for a Free Developers account](https://webrtchost.com/hosting-plans/#WebRTC-Only) with VideoWhisper, to get a server address and token. 
 
 ### Installation
 * Install NodeJS if not already available on your server (ie. `yum install nodejs`)
@@ -94,7 +94,7 @@ DROP TABLE IF EXISTS accounts;
   );
 
 ```
-Properties are JSON encoded, for accounts and plans.
+Properties are JSON encoded, for accounts and plans. Some fields like contactId, created, meta are used with external integration and may not be required for your project.
 
 Sample test data showcasing supported properties:
 ```
