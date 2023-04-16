@@ -53,6 +53,7 @@ Server currently implements these GET requests:
 * `https://yourServer.com:3000/channels/?apikey=API_KEY` - Shows current list of published channels (with streaming parameters like resolution, bitrate)
 * `https://yourServer.com:3000/stats/?apikey=API_KEY` - Shows usage stats by account (number of connections, bitrate)
 * `https://yourDomain:PORT/update-accounts?apikey=API_KEY` - Reloads accounts from MySQL without restarting server (call after adding a new account)
+
 Configure API_KEY in `.env`. In development mode the apikey parameter is not required.
 
 ### Commercial Services
