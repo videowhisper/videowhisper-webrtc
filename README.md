@@ -1,4 +1,4 @@
-## VideoWhisper WebRTC
+## VideoWhisper WebRTC : Signaling Server with STUN/TURN Support
 
 This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, that can also be used with new apps. It's built in NodeJS, supports SSL, TURN/STUN configuration, authentication with static key or accounts (MySQL), streaming limitations & plans, API.
 
@@ -15,7 +15,7 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 * Integrates with VideoWhisper [Live Support Plugin](https://wordpress.org/plugins/live-support-tickets/) for account registration
 
 ### Free Server for Testing, Development
-If you want to test with an existing server, [register for a Free Developers account](https://webrtchost.com/hosting-plans/#WebRTC-Only) with VideoWhisper, to get a server address and token. 
+If you want to test with an existing server, [register for a Free Developers account](https://webrtchost.com/hosting-plans/#WebRTC-Only) with VideoWhisper, to get a server address and token. Includes STUN/TURN server. Limited availability.
 
 ### Installation
 * Install NodeJS if not already available on your server (ie. `yum install nodejs`)
