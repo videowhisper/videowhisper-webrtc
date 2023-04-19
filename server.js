@@ -497,14 +497,14 @@ io.on("connection", (socket) => {
           socket.broadcast.emit("message", {
               from: disconnectingPeer.peerID,
               target: "all",
-              payload: { action: "close", message: "Peer has left the signaling server" },
+              payload: { action: "close", message: disconnectingPeer.peerID + " left @" + channel },
           });
 
           // remove disconnecting peer from connections
           delete connections[channel][disconnectingPeer.peerID];
         }
         else {
-          console.log(socket.id, "has disconnected (unregistered peer from", channel);
+          console.log(socket.id, " disconnected (unregistered peer from", channel);
        }
 
        //update live stats after removing connection

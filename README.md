@@ -5,6 +5,7 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 ### Live Demos
 * [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
 * [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
+* [Random Videochat](https://2wayvideochat.com/random-videochat/)
 
 ### Features
 * Signaling server for WebRTC
@@ -30,12 +31,14 @@ If you want to test with an existing server, [register for a Free Developers acc
 * Troubleshooting: Run from folder with `npm start` to see live server output in terminal and end it with `Ctrl+C`
 
 ### Configure HTML5 Videochat
-You will need the signaling server address, based on certificate and port you configured, like `wss://yourdomain.com:3000` and the SecretToken you configured or account token from `accounts` table in MySQL database. 
+You will need the signaling server address, based on certificate and port you configured, like `wss://yourserverdomain.com:3000` and the SecretToken you configured or account token from `accounts` table in MySQL database. 
 
-For [Paid Videochat](https://paidvideochat.com/) from WebRTC plugin settings select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
+* For [Paid Videochat / PPV Live Webcams](https://paidvideochat.com/) from WordPress plugin settings, WebRTC tab, select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
 Auto requires both VideoWhisper WebRTC for private chats and Wowza SE as relay for 1 to many group chats (recommended for scaling to many viewers).
 
-For PHP HTML5 Videochat editions [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/) , [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/) , configure `settings.php` :
+* For [2Way VideoCalls and Random Chat](https://2wayvideochat.com) from WordPress plugin settings, Server tab, select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
+
+* For PHP HTML5 Videochat editions [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/) , [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/) , configure `settings.php` :
 
 ```
  $options = array(
