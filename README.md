@@ -100,7 +100,7 @@ Sample test data showcasing supported properties:
 ```
 INSERT INTO accounts (name, token, properties, meta, planId) VALUES ('Test Account', 'testToken', '{}', '', 1);
 INSERT INTO accounts (name, token, properties, meta, planId) VALUES ('Suspended Account', 'suspendedToken', '{"suspended":true}', '', 1);
-INSERT INTO plans (name, properties) VALUES ('Test Plan', '{"connections":2,"totalBitrate":1064,"bitrate":500,"framerate":15,"audioBitrate":32,"width":640,"height":360}');
+INSERT INTO plans (name, properties) VALUES ('Developers Plan', '{"connections":5,"totalBitrate":2700, "bitrate":500,"framerate":15,"audioBitrate":32,"width":640,"height":360}');
 ```
 Consider both bitrate and audioBitrate when setting an account limit for totalBitrate. In example 1064 for 2 users with 500 bitrate and 32 audioBitrate.
 

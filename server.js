@@ -1,5 +1,5 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2023.04.14";
+const SERVER_VERSION = "2023.04.19";
 const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration.";
 
 //Configuration
@@ -204,18 +204,18 @@ const authenticate = (socket, next) => {
 
     if (account.plan.connections) if (stats[account.name]) if (stats[account.name].connections >= account.plan.connections) 
     {
-      if (DEVMODE) console.warn(`WARNING: Connection limit reached for ${account.name} #`, stats[account.name].connections, socket.id );
+      if (DEVMODE) console.warn(`Connection limit reached for ${account.name} #`, stats[account.name].connections, socket.id );
       return next(new Error('ERROR: Connection limit exceeded'));
     } 
 
     if (account.plan.totalBitrate) if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate >= account.plan.totalBitrate )
     {
-      if (DEVMODE) console.warn(`WARNING: Total bitrate limit reached for ${account.name} `, stats[account.name].bitrate, socket.id );
+      if (DEVMODE) console.warn(`Total bitrate limit reached for ${account.name} `, stats[account.name].bitrate, socket.id );
       return next(new Error('ERROR: Bitrate limit exceeded'));
     } 
 
     if (account.properties.suspended) {
-      if (DEVMODE) console.warn(`WARNING: Suspended account ${account.name} `, socket.id);
+      if (DEVMODE) console.warn(`Suspended account ${account.name} `, socket.id);
       return next(new Error('ERROR: Suspended account'));
     } 
 
@@ -280,8 +280,11 @@ io.on("connection", (socket) => {
       socket.peerID = peerID;
       socket.channel = channel;
 
-      // Make sure that the hostname is unique, if the hostname is already in connections, send an error and disconnect
+      let found = false;
       if (peerID in connections[channel]) {
+        found = true;
+        /*
+              // Make sure that the hostname is unique, if the hostname is already in connections, send an error and disconnect
           socket.emit("uniquenessError", {
               from: "_channel_",
               to: peerID,
@@ -289,6 +292,8 @@ io.on("connection", (socket) => {
           });
           console.log(`ERROR: ${peerID} is already connected @${channel}`);
           socket.disconnect(true);
+          */
+         if (DEVMODE) console.warn(` ${peerID} is already subscribed to @${channel}`);
       } else {
 
         //get channel params
@@ -304,7 +309,7 @@ io.on("connection", (socket) => {
 
           if (issues.length > 0)
           {
-            if (DEVMODE) console.warn(`WARNING: Subscribe rejected for ${account.name}`, params, account.plan );
+            if (DEVMODE) console.warn(`Subscribe rejected for ${account.name}`, params, account.plan );
 
             socket.emit("subscribeError", {
               from: "_server_",
@@ -312,18 +317,29 @@ io.on("connection", (socket) => {
               message: `Unfit: ${issues.join(', ')}.`,
           });
 
+          if (found)
+          {
+            //leave channel and remove from connections
+            socket.leave(channel);
+            delete connections[channel][peerID];
+            if (DEVMODE) console.warn(`${peerID} unsubscribed from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
+          }
+
             return ;
 
           }
 
         }
 
+        if (!found)
+        {
         if (DEVMODE) console.log(` ${peerID} subscribed to @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length + 1}`);
             
           // Add new player peer
           const newPeer = { socketId: socket.id, peerID, type: "player", account: socket.account };
           connections[channel][peerID] = newPeer;
-        
+        }
+
           // Let broadcaster know about the new peer player (to send offer)
           socket.to(channel).emit("message", {
               type: "peer",
@@ -345,7 +361,10 @@ io.on("connection", (socket) => {
 
       if (! (channel in connections) ) connections[channel] = {};
 
+      let found = false;
       if (peerID in connections[channel]) {
+        found = true;
+        /*
         socket.emit("uniquenessError", {
             from: "_channel_",
             to: peerID,
@@ -353,6 +372,8 @@ io.on("connection", (socket) => {
         });
         console.log(`ERROR: ${peerID} is already connected @${channel}`);
         socket.disconnect(true);
+        */
+       if (DEVMODE) console.warn(`${peerID} already published in @${channel}. Updating...`);
      }
 
       if (params)
@@ -378,13 +399,20 @@ io.on("connection", (socket) => {
 
           if (issues.length > 0)
           {
-            if (DEVMODE) console.warn(`WARNING: Publish rejected for ${account.name}`, params, account.plan );
+            if (DEVMODE) console.warn(`Publish rejected for ${account.name}`, params, account.plan );
 
             socket.emit("publishError", {
               from: "_server_",
               to: peerID,
               message: `Unfit: ${issues.join(', ')}.`,
           });
+
+          if (found)  //leave channel and remove from connections
+          {
+            socket.leave(channel);
+            delete connections[channel][peerID];
+            if (DEVMODE) console.warn(`${peerID} unpublished from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
+          }
 
             return ;
 
@@ -394,11 +422,13 @@ io.on("connection", (socket) => {
 
       }
 
+      //save channel params
+      channels[channel] = params ? params : { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0, publisher: peerID, time: Date.now()};
+
+      if (!found) 
+      {
       socket.join(channel); //broadcaster subscribes to receive new peers
       if (!(channel in connections)) connections[channel] = {};
-
-      //save channel params
-      channels[channel] = params ? params : { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0, publisher: peerID};
 
       socket.peerID = peerID;
       socket.channel = channel;
@@ -406,9 +436,11 @@ io.on("connection", (socket) => {
       // Add new player peer
       const newPeer = { socketId: socket.id, peerID, type: "broadcaster", account: socket.account };
       connections[channel][peerID] = newPeer;
+      }
 
       // Let broadcaster know about current peers (to send offers)
       socket.send({ type: "peers", from: "_channel_", target: peerID, 'peers': Object.values(connections[channel]), 'peerConfig' : peerConfig }); 
+      
 
       //update stats after publisher joins
       updateStats();
