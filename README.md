@@ -7,6 +7,8 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 * [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 * [Random Videochat](https://2wayvideochat.com/random-videochat/)
 
+![HTML5 Videochat / P2P Video Call](/snapshots/h5v-call-client.jpg)
+
 ### Features
 * Signaling server for WebRTC
 * Peer configuration for relaying (STUN/TURN)
@@ -16,6 +18,7 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 
 ### Free Server for Testing, Development
 If you want to test with an existing server, [register for a Free Developers account](https://webrtchost.com/hosting-plans/#WebRTC-Only) with VideoWhisper, to get a server address and token. Includes STUN/TURN server. Limited availability.
+
 
 ### Installation
 * Install NodeJS if not already available on your server (ie. `yum install nodejs`)
@@ -36,7 +39,7 @@ You will need the signaling server address, based on certificate and port you co
 * For [Paid Videochat / PPV Live Webcams](https://paidvideochat.com/) from WordPress plugin settings, WebRTC tab, select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
 Auto requires both VideoWhisper WebRTC for private chats and Wowza SE as relay for 1 to many group chats (recommended for scaling to many viewers).
 
-* For [2Way VideoCalls and Random Chat](https://2wayvideochat.com) from WordPress plugin settings, Server tab, select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
+* For [2Way VideoCalls and Random Chat](https://2wayvideochat.com) from WordPress plugin settings, Server tab, select WebRTC Streaming Server : VideoWhisper and fill Address, Token for VideoWhisper WebRTC.
 
 * For PHP HTML5 Videochat editions [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/) , [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/) , configure `settings.php` :
 
