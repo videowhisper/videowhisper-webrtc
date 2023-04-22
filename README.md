@@ -1,8 +1,9 @@
 ## VideoWhisper WebRTC : Signaling Server with STUN/TURN Support
 
-This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, that can also be used with new apps. It's built in NodeJS, supports SSL, TURN/STUN configuration, authentication with static key or accounts (MySQL), streaming limitations & plans, API.
+This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, that can also be used with new apps. It's built in NodeJS, supports SSL, TURN/STUN configuration, authentication with static key or accounts (MySQL), streaming limitations & plans, API. 
+Can be used to publish a stream from a broadcaster to 1 or more subscribed viewers and possible applications include 1 to 1 (1 way or 2 way private), 1 to multiple, multiple to multiple (conferencing) live video streaming.
 
-### Live Demos
+### Live Demos without Registration
 * [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
 * [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 * [Random Videochat](https://2wayvideochat.com/random-videochat/)
@@ -11,10 +12,18 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 
 ### Features
 * Signaling server for WebRTC
+* Publish stream from broadcaster to 1 or multiple subscribed viewers
+* Handles multiple channels (streams) at same time
 * Peer configuration for relaying (STUN/TURN)
 * Authentication with static token or accounts (MySQL) with ability to suspend account
 * Limitation plans for accounts (totalBitrate, bitrate, audioBitrate, width, height, frameRate)
-* Integrates with VideoWhisper [Live Support Plugin](https://wordpress.org/plugins/live-support-tickets/) for account registration
+* Integrates with VideoWhisper [Live Support WP Plugin](https://wordpress.org/plugins/live-support-tickets/) for account registration, managing accounts/plans
+* Ready to use apps and turnkey site setups like:
+  - [PaidVideochat: Pay Per Minute Services](https://paidvideochat.com)
+  - [FansPaysite: Live Creator Subscriptions](https://fanspaysite.com)
+  - [2WayVideochat: RandomChat & Private Calls](https://2wayvideochat.com/)
+  - [PHP: P2P 2 Way Video Calls](https://demo.videowhisper.com/p2p-html5-videocall/)
+  - [PHP: P2P 1 to Many Live Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 
 ### Free Server for Testing, Development
 If you want to test with an existing server, [register for a Free Developers account](https://webrtchost.com/hosting-plans/#WebRTC-Only) with VideoWhisper, to get a server address and token. Includes STUN/TURN server. Limited availability.
