@@ -153,16 +153,20 @@ This extra module is not part of public repository: [Consult VideoWhisper](https
 Access to broadcast/playback can be limited either by token or client facing pin which can be per account or per stream.
 
 * Configure .env:
-- NGINX_HOST=#leave blank to disable or set something like https://serverdomain.com:port
-- NGINX_RTMP=#rtmp://serverdomain.com:1935/live
-- NGINX_KEY=#key for m3u8 playlist access
+```
+NGINX_HOST=#leave blank to disable or set something like https://serverdomain.com:port
+NGINX_RTMP=#rtmp://serverdomain.com:1935/live
+NGINX_KEY=#key for m3u8 playlist access
+```
 * Configure nginx.conf : 
   * setup rtmp/server/live application: 
-  		- on_publish http://hostforstreaming.com:3001/nginx/on_publish?apikey=API_KEY;
-      - on_publish_done http://hostforstreaming.com:3001/nginx/on_publish_done?apikey=API_KEY;
-			- on_play http://hostforstreaming.com:3001/nginx/on_play?apikey=API_KEY;
-			- on_play_done http://hostforstreaming.com:3001/nginx/on_play_done?apikey=API_KEY;
-			- on_update http://hostforstreaming.com:3001/nginx/on_update?apikey=API_KEY;
+  ```
+  	 on_publish http://hostforstreaming.com:3001/nginx/on_publish?apikey=API_KEY;
+     on_publish_done http://hostforstreaming.com:3001/nginx/on_publish_done?apikey=API_KEY;
+		 on_play http://hostforstreaming.com:3001/nginx/on_play?apikey=API_KEY;
+		 on_play_done http://hostforstreaming.com:3001/nginx/on_play_done?apikey=API_KEY;
+		 on_update http://hostforstreaming.com:3001/nginx/on_update?apikey=API_KEY;
+  ```
   * setup http/server/location /hls for hls playback and restrict access to playlist:
   ```
   location ~* /hls/.*/.*/index.m3u8$ {
@@ -171,9 +175,9 @@ Access to broadcast/playback can be limited either by token or client facing pin
 				}
   ```
 * RTMP broadcast to rtmp://streamingserver:1935/live with stream key Acccount/Stream?token=TOKEN&pin=PIN :
-- TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts
-- PIN is the broadcastPin from account properties or stream properties retrieved from streamUrl account property
+  * TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts, not needed if using pin
+  * PIN is the broadcastPin from account properties or stream properties retrieved from streamUrl account property
 * HLS playback can be done directly from streaming server ( https://streamingserver:1936/hls/Account/TestStream/index.m3u8?key=NGINX_KEY ) for testing or trough videowhisper nodejs server for access control and stats ( https://videowhisper:3000/hls/Account/Stream/index.m3u8?token=TOKEN&pin=PIN ):
-- TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts
-- PIN can be playbackPin from account properties or stream properties retrieved from streamUrl account property
+  * TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts, not needed if using pin
+  * PIN can be playbackPin from account properties or stream properties retrieved from streamUrl account property
 * stream properties are retrieved on broadcast/playback from streamUrl?stream={Stream}&token{account token}=&type={broadcast/playback} and expects json encoded data (broadcastPin or playbackPin)
