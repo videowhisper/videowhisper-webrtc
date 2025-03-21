@@ -59,7 +59,7 @@ Auto requires both VideoWhisper WebRTC for private chats and Wowza SE as relay f
 ```
  $options = array(
 	'serverType' => 'videowhisper', //videowhisper/wowza 
-	'vwsSocket' => 'wss://yourserver.com:3000/',
+	'vwsSocket' => 'wss://videowhisperServer:PORT/',
 	'vwsToken' => 'YourSecretToken',
     ...
 ```
@@ -68,11 +68,11 @@ If you implement your own videochat apps, you need to use same functions and log
 
 ### API
 Server currently implements these GET requests:
-* `https://yourServer.com:3000/` - Shows server version & features, tests STUN/TURN for WebRTC
-* `https://yourServer.com:3000/connections/?apikey=API_KEY` - Shows current list of connections,
-* `https://yourServer.com:3000/channels/?apikey=API_KEY` - Shows current list of published channels (with streaming parameters like resolution, bitrate)
-* `https://yourServer.com:3000/stats/?apikey=API_KEY` - Shows usage stats by account (number of connections, bitrate)
-* `https://yourDomain:PORT/update-accounts?apikey=API_KEY` - Reloads accounts from MySQL without restarting server (call after adding a new account)
+* `https://videowhisperServer:PORT/` - Shows server version & features, tests STUN/TURN for WebRTC
+* `https://videowhisperServer:PORT/connections/?apikey=API_KEY` - Shows current list of connections,
+* `https://videowhisperServer:PORT/channels/?apikey=API_KEY` - Shows current list of published channels (with streaming parameters like resolution, bitrate)
+* `https://videowhisperServer:PORT/stats/?apikey=API_KEY` - Shows usage stats by account (number of connections, bitrate)
+* `https://videowhisperServer:PORT/update-accounts?apikey=API_KEY` - Reloads accounts from MySQL without restarting server (call after adding a new account)
 
 Configure API_KEY in `.env`. In development mode the apikey parameter is not required.
 
@@ -147,25 +147,25 @@ INSERT INTO plans (name, properties) VALUES ('Developers Plan', '{"connections":
 Consider both bitrate and audioBitrate when setting an account limit for totalBitrate. In example 1064 for 2 users with 500 bitrate and 32 audioBitrate.
 
 
-### Nginx RTMP/HLS Module (Extra)
+### RTMP/HLS Nginx Module (Extra)
 This module can be used to control streams from a Nginx server with RTMP / HLS, implement access control, account limitations and stats.
-This extra module is not part of public repository: [Consult VideoWhisper](https://consult.videowhisper.com/) if needed.
+This extra module (modules/nginx.js) is not part of public repository: [Consult VideoWhisper](https://consult.videowhisper.com/) if needed.
 Access to broadcast/playback can be limited either by token or client facing pin which can be per account or per stream.
 
-* Configure .env:
+* Configure Nginx server info in .env:
 ```
-NGINX_HOST=#leave blank to disable or set something like https://serverdomain.com:port
-NGINX_RTMP=#rtmp://serverdomain.com:1935/live
+NGINX_HOST=#leave blank to disable or set something like https://nginxServer:nginxPort 
+NGINX_RTMP=#rtmp://nginxServer:nginxPortRTMP/live
 NGINX_KEY=#key for m3u8 playlist access
 ```
 * Configure nginx.conf : 
-  * setup rtmp/server/live application: 
+  * setup rtmp/server/live calls to videowhisper server (local http on port 3001) : 
     ```
-    on_publish http://hostforstreaming.com:3001/nginx/on_publish?apikey=API_KEY;
-    on_publish_done http://hostforstreaming.com:3001/nginx/on_publish_done?apikey=API_KEY;
-    on_play http://hostforstreaming.com:3001/nginx/on_play?apikey=API_KEY;
-    on_play_done http://hostforstreaming.com:3001/nginx/on_play_done?apikey=API_KEY;
-    on_update http://hostforstreaming.com:3001/nginx/on_update?apikey=API_KEY;
+    on_publish http://videowhisperServer:3001/nginx/on_publish?apikey=API_KEY;
+    on_publish_done http://videowhisperServer:3001/nginx/on_publish_done?apikey=API_KEY;
+    on_play http://videowhisperServer:3001/nginx/on_play?apikey=API_KEY;
+    on_play_done http://videowhisperServer:3001/nginx/on_play_done?apikey=API_KEY;
+    on_update http://videowhisperServer:3001/nginx/on_update?apikey=API_KEY;
     ```
   * setup http/server/location /hls for hls playback and restrict access to playlist by key=NGINX_KEY:
     ```
@@ -178,7 +178,7 @@ NGINX_KEY=#key for m3u8 playlist access
 * RTMP broadcast to rtmp://streamingserver:1935/live with stream key Acccount/Stream?token=TOKEN&pin=PIN :
   * TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts, not needed if using pin
   * PIN is the broadcastPin from account properties or stream properties retrieved from streamUrl account property
-* HLS playback can be done directly from Nginx ( https://streamingserver:1936/hls/Account/TestStream/index.m3u8?key=NGINX_KEY ) for testing or trough Videowhisper NodeJs server for access control and stats ( https://videowhisper:3000/hls/Account/Stream/index.m3u8?token=TOKEN&pin=PIN ):
+* HLS playback can be done directly from Nginx ( https://nginxServer:nginxPort/hls/Account/TestStream/index.m3u8?key=NGINX_KEY ) for testing or trough Videowhisper NodeJs server for access control and stats ( https://videowhisperServer:PORT/hls/Account/Stream/index.m3u8?token=TOKEN&pin=PIN ):
   * TOKEN is the universal STATIC_TOKEN from server configuration or account token when using accounts, not needed if using pin
   * PIN can be playbackPin from account properties or stream properties retrieved from streamUrl account property
 * stream properties are retrieved on broadcast/playback from streamUrl?stream={Stream}&token{account token}=&type={broadcast/playback} and expects json encoded data (broadcastPin or playbackPin)
