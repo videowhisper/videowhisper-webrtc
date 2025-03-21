@@ -1,6 +1,6 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2023.04.19";
-const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration.";
+const SERVER_VERSION = "2025.03.21";
+const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration, NGINX server integration for RTMP/HLS stream management with stream pin validation and web server notification, STUN/TURN check.";
 
 //Configuration
 require('dotenv').config();
@@ -14,7 +14,7 @@ console.log("VideoWhisper WebRTC Signaling Server", SERVER_VERSION, "\r", SERVER
 let peerConfig; 
 if (process.env.COTURN_SERVER) peerConfig = {
   iceServers: [
-  {   
+  {    
     urls: [ "stun:" + process.env.COTURN_SERVER ]
   }, 
   {   
@@ -36,6 +36,14 @@ if (process.env.STATIC_TOKEN) console.log("Static token configured", DEVMODE ? p
 //Account database
 var accounts = {};
 let accountsLoaded = false;
+var accountIssues = {};
+
+const serverUpdateStats = () => {
+  if (DEVMODE) console.log("serverUpdateStats");
+  updateStats();
+};
+
+let nginxModuleInstance;
 
 //If using MySQL, load accounts & plans from the database
 if (process.env.DB_HOST)
@@ -46,6 +54,8 @@ db.getAccounts()
   .then(accts => {
      accounts = accts;
      accountsLoaded = true;
+     if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts);
+    
   })
   .catch(err => {
     console.error('Error loading accounts:', err);
@@ -64,7 +74,7 @@ function enforceSdp(sdp, account) {
 
   const parsedSdp = transform.parse(sdp);
   const videoMedia = parsedSdp.media.find(media => media.type === 'video');
-
+  
 	if (videoMedia) {
     videoMedia.fmtp.forEach((videoFmtp, index) => {
     const videoCodec = videoMedia.rtp[index].codec;
@@ -84,6 +94,73 @@ function enforceSdp(sdp, account) {
   return transform.write(parsedSdp);
 }
 
+//STUN/TURN Checks
+const { RTCPeerConnection } = require("wrtc");
+
+// Function to test STUN/TURN connectivity
+async function testStunTurn() {
+  return new Promise((resolve) => {
+      const config = peerConfig; // Use existing peerConfig
+
+      if (!config || !config.iceServers || config.iceServers.length === 0) {
+          return resolve({ stun: false, turn: false, error: "No ICE servers configured" });
+      }
+
+      let stunAvailable = false;
+      let turnAvailable = false;
+
+      const peer = new RTCPeerConnection(config);
+
+      const parseCandidateType = (candidate) => {
+        const parts = candidate.split(' ');
+        const typIndex = parts.indexOf('typ');
+        return typIndex > -1 ? parts[typIndex + 1] : null;
+      };
+
+      const isPublicIP = (ip) => {
+        if (!ip) return false;
+        return !(
+          ip.startsWith("10.") ||
+          ip.startsWith("192.168.") ||
+          ip.startsWith("127.") ||
+          ip.startsWith("169.254.") ||
+          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) // 172.16.0.0 – 172.31.255.255
+        );
+      };
+      
+      peer.onicecandidate = (event) => {
+          if (event.candidate) {
+              const { candidate } = event.candidate;
+              const candidateType = parseCandidateType(candidate);
+
+              if (candidateType === "srflx") stunAvailable = true; // STUN success
+              if (candidateType === "relay") turnAvailable = true; // TURN success
+              if (candidateType === "host" && isPublicIP(candidate.split(" ")[4])) stunAvailable = true; //If the server is  on a public IP with no NAT, STUN may not return srflx because it’s not needed.
+
+          }
+      };
+
+      peer.onicegatheringstatechange = () => {
+          if (peer.iceGatheringState === "complete") {
+              peer.close();
+              resolve({ stun: stunAvailable, turn: turnAvailable });
+          }
+      };
+
+      // Create and set a dummy offer to trigger ICE gathering
+      peer.createDataChannel("test");
+      peer.createOffer()
+          .then((offer) => peer.setLocalDescription(offer))
+          .catch(() => resolve({ stun: false, turn: false, error: "ICE candidate error" }));
+
+      // Timeout to prevent indefinite waiting
+      setTimeout(() => {
+          peer.close();
+          resolve({ stun: stunAvailable, turn: turnAvailable, error: "ICE candidate timeout" });
+      }, 5000);
+  });
+}
+
 //WEBRTC SIGNALING SERVER
 const express = require('express');
 const app = express();
@@ -95,7 +172,8 @@ const https = require('https');
 //i.e. cPanel > SSL/TLS > Certificates > Install : get certificate and key
 const options = {
   key: fs.readFileSync(process.env.CERTIFICATE  + '.key'),
-  cert: fs.readFileSync(process.env.CERTIFICATE  + '.crt')
+  cert: fs.readFileSync(process.env.CERTIFICATE  + '.crt'),
+  ca: fs.readFileSync(process.env.CERTIFICATE  + '.pem') // crt + intermediate if necessary
 };
 const server = https.createServer(options, app);
 
@@ -108,10 +186,46 @@ let connections = {};
 let channels = {};
 let stats = {};
 
+
 //[GET] https://yourDomain:PORT/
-app.get("/", (req, res) => {
-  if (DEVMODE) console.log("API /", "VideoWhisper WebRTC", SERVER_VERSION, SERVER_FEATURES );
-res.json({ "server": "VideoWhisper WebRTC",  "version": SERVER_VERSION, "features": SERVER_FEATURES });
+app.get("/", async (req, res) => { // Mark function as async 
+ 
+  let result = {
+    "server": "VideoWhisper WebRTC",
+    "version": SERVER_VERSION,
+    "features": SERVER_FEATURES,
+    "nginx-module": (nginxModuleInstance ? true : false)
+  };
+
+  try {
+      const stunTurnStatus = await testStunTurn(); // Check STUN/TURN availability
+
+      let testResult = 
+     {
+        "webrtc-test": stunTurnStatus.error ? `Error: ${stunTurnStatus.error}` : "STUN/TURN check passed",
+        "stun": stunTurnStatus.stun,
+        "turn": stunTurnStatus.turn
+    };
+
+      //add these properties to the existing result object
+      result = { ...result, ...testResult };
+
+
+      if (DEVMODE) console.log("API /", result);
+      res.json(result);
+
+  } catch (error) {
+     let  testResult = {
+        "webrtc-test": "Error while checking STUN/TURN",
+        "stun": false,
+        "turn": false
+    };
+
+    result = { ...result, ...testResult };
+
+      console.error("Error checking STUN/TURN:", error, result);
+      res.json(result);
+  }
 });
 
 const API_KEY = process.env.API_KEY;
@@ -139,15 +253,78 @@ if (DEVMODE || API_KEY)
     res.json(Object.entries(channels));
   });
 
-  //[GET] https://yourDomain:PORT/stats?apikey=YOUR_API_KEY
-    app.get("/stats", (req, res) => {
+  //[GET] https://yourDomain:PORT/status?apikey=API_KEY&token=ACCOUNT_TOKEN
+    app.get("/status", (req, res) => {
 
     const apikey = req.query.apikey;
-    if (DEVMODE) console.log("API /stats", stats, API_KEY, apikey );
+    const token = req.query.token;
 
-    if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
-    else
-    res.json(Object.entries(stats));
+    if (!token && apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key and no account token');
+
+    if (DEVMODE) console.log("API /status", stats, apikey, token );
+
+    let result = {};
+
+    if (token)
+    {
+      //account status
+
+      //check if account with that token exists
+      if (accounts[token])
+      {
+        const account = accounts[token].name;
+        const accountInfo = accounts[token];
+     
+        result['account'] = account;
+
+        if (stats[account]) 
+          {
+            result['status'] = 'Active';
+            //add stats[account];
+            result['stats'] = stats[account];            
+
+            //add webrtc channels
+            let webrtc = {};
+            for (let channel in connections) //for each channel
+            {
+              for (let peerID in connections[channel]) //for each connection
+              {
+                let peerAccount = connections[channel][peerID].account;
+                if (peerAccount == account)
+                {
+                  if (!webrtc[channel]) {
+                      webrtc[channel] = channels[channel]; 
+                     // webrtc[channel]['connections'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
+                  }
+                  break; 
+                }
+              }
+            }
+            result['webrtc'] = webrtc;
+            //end active account
+          }
+        else result['status'] = 'Inactive';
+
+        if (accountInfo && accountInfo.plan) result['plan'] = accountInfo.plan;
+
+        res.json(result);
+      }
+      else 
+      {
+        if (DEVMODE) console.warn("API /status Invalid account token", token);
+        return res.status(401).send('Invalid account token');
+      }
+    }
+    else 
+    {
+      if (DEVMODE) console.warn("API /status ALL");
+      result['connections'] = Object.keys(connections).length;
+      result['stats'] = stats;
+      result['webrtc'] = channels;
+      res.json(result);
+    }
+    
+
   });
 
 
@@ -168,6 +345,8 @@ if (DEVMODE || API_KEY)
             .then(accts => {
               accounts = accts;
               accountsLoaded = true;
+
+              if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts); //also update for nginx module
             })
             .catch(err => {
               console.error('Error loading accounts:', err);
@@ -177,6 +356,21 @@ if (DEVMODE || API_KEY)
         res.json({ "status": "Updating Accounts" });
       }
     });
+}
+
+//Nginx RTMP/HLS module
+if (process.env.NGINX_HOST) {
+  const NGINX_HOST = process.env.NGINX_HOST;
+
+  if (fs.existsSync('./modules/nginx.js')) {
+    const nginxModule = require('./modules/nginx'); 
+    nginxModuleInstance = nginxModule(app, DEVMODE, serverUpdateStats);
+  } else {
+    console.warn('Nginx module is missing. Ask https://consult.videowhisper.com for details about the nginx RTMP/HLS integration module.');
+  }
+
+} else if (DEVMODE) {
+  console.log('Nginx module disabled');
 }
 
 
@@ -256,11 +450,45 @@ function updateStats()
       if (connections[channel][peerID].type == 'player') accountStats[account]['players']++;
       if (connections[channel][peerID].type == 'broadcaster') accountStats[account]['broadcasters']++;
     }
+
+    //clean up connections for channel if no peers
+    if (connections[channel] && Object.keys(connections[channel]).length == 0) delete connections[channel];
   }
 
+  //update channel peers
+  for (let channel in channels)
+  if (channels[channel]) {
+    channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
+
+    //delete if no peers and more than 5 minutes old
+    if (channels[channel]['peers'] == 0 && Date.now() - channels[channel]['time'] > 300000) delete channels[channel];
+  }
+
+        //update account issues
+        for (let account in accountIssues)
+          for (let issue in accountIssues[account])
+          {
+            if (!accountStats[account]) accountStats[account] = {};
+            if (!accountStats[account]['issues']) accountStats[account]['issues'] = {};
+            accountStats[account]['issues'][issue] = accountStats[account]['issues'][issue] ? accountStats[account]['issues'][issue] + accountIssues[account][issue] : accountIssues[account][issue];
+          }
+
+  if (nginxModuleInstance) accountStats = nginxModuleInstance.addStats(accountStats); //include nginx stats
+
   stats = accountStats;
-  //if (DEVMODE) console.log("updateStats", stats);
+  if (DEVMODE) console.log("updateStats", stats);
 }
+
+const updateIssues = (issues, account) =>
+  {
+    if (!Array.isArray(issues)) return;
+    if (!accountIssues[account]) accountIssues[account] = {};   
+
+    issues.forEach(issue => {
+        accountIssues[account][issue] = accountIssues[account][issue] ? accountIssues[account][issue] + 1 : 1;
+    });
+
+  }
 
 // SIGNALING LOGIC
 io.on("connection", (socket) => {
@@ -309,6 +537,7 @@ io.on("connection", (socket) => {
 
           if (issues.length > 0)
           {
+          
             if (DEVMODE) console.warn(`Subscribe rejected for ${account.name}`, params, account.plan );
 
             socket.emit("subscribeError", {
@@ -317,13 +546,20 @@ io.on("connection", (socket) => {
               message: `Unfit: ${issues.join(', ')}.`,
           });
 
+          //update account issues
+          updateIssues(issues, account.name);
+      
           if (found)
           {
             //leave channel and remove from connections
             socket.leave(channel);
             delete connections[channel][peerID];
+
             if (DEVMODE) console.warn(`${peerID} unsubscribed from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
           }
+
+          //update channel connections
+            if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
 
             return ;
 
@@ -347,8 +583,12 @@ io.on("connection", (socket) => {
               target: "all",
               peerID: peerID,
               });
-      }
 
+       }
+
+         //update subscriber count
+         if (channels[channel]) channels[channel]['peers'] = Object.keys(connections[channel]).length;
+    
       updateStats();
   });
 
@@ -388,18 +628,34 @@ io.on("connection", (socket) => {
           if (DEVMODE) console.warn(`socket.on(publish account ${account.name} plan`, account.plan );
 
           let issues = [];
+
+          //stream limits
+          if (params['width'] >= params['height'])
+          {
+          //landscape: width > height
           if (account.plan.width) if (params['width'] > account.plan.width) issues.push('width');
           if (account.plan.height) if (params['height'] > account.plan.height) issues.push('height' );
+          }
+          else {
+            //portrait (inverted on phones): height > width, swap limits
+            if (account.plan.width) if (params['height'] > account.plan.width) issues.push('height');
+            if (account.plan.height) if (params['width'] > account.plan.height) issues.push('width' );  
+                    
+            //if height or width in issues, also add 'portrait' issue
+            if (issues.includes('width') || issues.includes('height')) issues.push('portrait');
+          }
+
           if (account.plan.bitrate) if (params['bitrate'] > account.plan.bitrate) issues.push( 'bitrate' );
           if (account.plan.frameRate) if (params['frameRate'] > account.plan.frameRate) issues.push('frameRate' );
           if (account.plan.audioBitrate) if (params['audioBitrate'] > account.plan.audioBitrate) issues.push('audioBitrate' );
 
+          //cummulative limits
           if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate + params['bitrate'] + params['audioBitrate'] > account.plan.totalBitrate ) issues.push('totalBitrate' );
           if (stats[account.name]) if (stats[account.name].conections > account.plan.conections ) issues.push( 'conections' );
 
           if (issues.length > 0)
           {
-            if (DEVMODE) console.warn(`Publish rejected for ${account.name}`, params, account.plan );
+            if (DEVMODE) console.warn(`Publish rejected for ${account.name}`, issues, params, account.plan );
 
             socket.emit("publishError", {
               from: "_server_",
@@ -407,12 +663,18 @@ io.on("connection", (socket) => {
               message: `Unfit: ${issues.join(', ')}.`,
           });
 
+          //add to account issues
+          updateIssues(issues, account.name);
+          
           if (found)  //leave channel and remove from connections
           {
             socket.leave(channel);
             delete connections[channel][peerID];
+
             if (DEVMODE) console.warn(`${peerID} unpublished from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
           }
+
+          if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
 
             return ;
 
@@ -441,6 +703,9 @@ io.on("connection", (socket) => {
       // Let broadcaster know about current peers (to send offers)
       socket.send({ type: "peers", from: "_channel_", target: peerID, 'peers': Object.values(connections[channel]), 'peerConfig' : peerConfig }); 
       
+
+      //
+      if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
 
       //update stats after publisher joins
       updateStats();

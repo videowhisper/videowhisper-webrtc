@@ -45,7 +45,7 @@ class Database {
           const props = properties ? JSON.parse(properties) : {};
           const planProps = plan ? JSON.parse(plan) : {};
           if (token) {
-            acc[token] = { id, name, properties: props, plan: planProps };
+            acc[token] = { id, name, token, properties: props, plan: planProps };
           }
           return acc;
         }, {});
