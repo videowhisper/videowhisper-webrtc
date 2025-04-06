@@ -48,8 +48,14 @@ If you want to test with an existing server, [register for a Free Developers acc
 * Troubleshooting: Run from folder with `npm start` to see live server output in terminal and end it with `Ctrl+C`
 
 
-### Configure HTML5 Videochat
+### Configure HTML5 Videochat / Streaming Apps
 You will need the signaling server address, based on certificate and port you configured, like `wss://yourserverdomain.com:3000` and the SecretToken you configured or account token from `accounts` table in MySQL database. 
+
+* For [Webcam-Streaming-WebRTC](https://github.com/videowhisper/Webcam-Streaming-WebRTC) fill VideoWhisper Server (VWS) settings in `config.json` (in build folder from `dist`, after copying from `unconfigured.json`):
+```
+    "vwsSocket": "wss://videowhisperServer:PORT/",
+    "vwsToken": "YourSecretToken",
+```
 
 * For [Paid Videochat / PPV Live Webcams](https://paidvideochat.com/) from WordPress plugin settings, WebRTC tab, select WebRTC Streaming Server : VideoWhisper or Auto and fill Address, Token for VideoWhisper WebRTC.
 Auto requires both VideoWhisper WebRTC for private chats and Wowza SE as relay for 1 to many group chats (recommended for scaling to many viewers).
@@ -108,7 +114,7 @@ this.vwsSocket = new io(props.config.vwsSocket, {
       'auth': { 'token': props.config.vwsToken } ,
       'transports': ['websocket'],		
       'secure':true,
-      'autoConnect': false, 
+      'autoConnect': false,
       'reconnection': false
   });
 ```
