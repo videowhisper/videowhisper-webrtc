@@ -1,5 +1,5 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2025.03.21";
+const SERVER_VERSION = "2025.04.06";
 const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration, NGINX server integration for RTMP/HLS stream management with stream pin validation and web server notification, STUN/TURN check.";
 
 //Configuration
