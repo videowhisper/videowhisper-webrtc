@@ -3,6 +3,7 @@ This is a WebRTC signaling server designed for VideoWhisper HTML5 Videochat, tha
 Can be used to publish a stream from a broadcaster to 1 or more subscribed viewers and possible applications include 1 to 1 (1 way or 2 way private), 1 to multiple, multiple to multiple (conferencing) live video streaming.
 
 ### Live Demos without Registration
+* [Webcam Streaming WebRTC](https://demo.videowhisper.com/Webcam-Streaming-WebRTC/)
 * [P2P 2 Way Videocall](https://demo.videowhisper.com/p2p-html5-videocall/)
 * [Live Video Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 * [Random Videochat](https://2wayvideochat.com/random-videochat/)
@@ -23,6 +24,7 @@ Can be used to publish a stream from a broadcaster to 1 or more subscribed viewe
   - [PaidVideochat: Pay Per Minute Services](https://paidvideochat.com)
   - [FansPaysite: Live Creator Subscriptions](https://fanspaysite.com)
   - [2WayVideochat: RandomChat & Private Calls](https://2wayvideochat.com/)
+  - [Webcam Streaming WebRTC](https://demo.videowhisper.com/Webcam-Streaming-WebRTC/)
   - [PHP: P2P 2 Way Video Calls](https://demo.videowhisper.com/p2p-html5-videocall/)
   - [PHP: P2P 1 to Many Live Streaming](https://demo.videowhisper.com/vws-html5-livestreaming/)
 * Support for extra module (not included in this repository): RTMP/HLS, Custom
@@ -89,22 +91,54 @@ Configure API_KEY in `.env`. In development mode the apikey parameter is not req
 ### How does WebRTC signaling work?
 To use with own WebRTC streaming application(s) see a brief description below:
 
-Server
- 1. For each stream server manages a channel with broadcaster & player(s)
- 2. Players call `subscribe` to register in a channel
- 3. Broadcaster calls `publish` to register and get players in channel
- 4. Peers exchange offers, answers, ice candidates with `messagePeer`
+##### Server
+The VideoWhisper Server (VWS):
+ * Server manages channels (rooms) with broadcaster & player(s)
+ * Handles `publish` from broadcaster to register own stream and get players in channel
+ * Handles `subscribe` from players to register in a channel
+ * Notifies broadcaster about list of `peers` on publish and each new `peer` on player subscribe
+ * Handles signaling between peers with `messagePeer`: exchange `offer`, `answer`, `candidate` 
 
-Broadcaster
- 1. For each player, makes a `peerConnection` and creates, sets, sends offer when `peerConnection.onnegotiationneeded`
- 2. Sends the ice candidate on `peerConnection.onicecandidate`
- 3. Sets ice candidates received from server with `peerConnection.addIceCandidate`
+##### Client Implementation
+For an exact implementation sample see [Webcam-Streaming-WebRTC](https://github.com/videowhisper/Webcam-Streaming-WebRTC) available with source code. It includes implementation for both broadcaster and player clients.
 
-Player
- 1. On offer message from server creates `peerConnection`, sets remote description, creates sets, sends answer
- 2. Sends the ice candidate on `peerConnection.onicecandidate`
- 3. Sets ice candidates received from server with `peerConnection.addIceCandidate`
-
+Clients connect to this server by sockets using address and token:
+```js
+this.vwsSocket = new io(props.config.vwsSocket, {
+      'auth': { 'token': props.config.vwsToken } ,
+      'transports': ['websocket'],		
+      'secure':true,
+      'autoConnect': false, 
+      'reconnection': false
+  });
+```
+##### Broadcaster Client
+Broadcaster publishes a channel and works with server and peers. 
+ 1. After connecting to server, sends `publish` message with channel name to server
+  * `peerID`: username of broadcaster
+  * `channel`: channel (room) name
+  * `params`: object with stream parameters (width, height, bitrate, audioBitrate, frameRate)
+ 2. Handles `publishError` from server 
+ 3. Handles `message` from server:
+    * `peers` or `peer` : adds the peer to list
+    * `answer` : sets remote description and sends answer
+    * `candidate` : sets ice candidate with `peerConnection.addIceCandidate`
+ 4. Using `messagePeer` communicates with the player peers:   
+    * Creates and sends `offer` when `peerConnection.onnegotiationneeded`
+    * Sends the ice `candidate` on `peerConnection.onicecandidate`
+  
+##### Player Client
+Player subscribes to play from a channel.
+1. After connecting to server, sends `subscribe` message with channel name and token
+  * `peerID`: username of player
+  * `channel`: channel (room) name
+2. Handles `subscribeError` from server 
+3. Handles `message` from server:
+  * `offer` : sets remote description and sends answer
+  * `candidate` : sets ice candidate with `peerConnection.addIceCandidate`
+4. Using `messagePeer` communicates with broadcaster peer:
+  * Creates and sends `answer` message on `offer` message
+  * Sends the ice candidate with `candidate` message on `peerConnection.onicecandidate`
 
 ### Database (MySQL) Module
 For managing connections from different accounts (websites, setups) and/or setting limitations, use a MySQL with unique token keys (per account).

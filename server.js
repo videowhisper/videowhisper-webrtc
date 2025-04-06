@@ -758,12 +758,15 @@ io.on("connection", (socket) => {
 
       if (disconnectingPeer) {
          if (DEVMODE) console.log("Disconnected", socket.id, ":" ,  disconnectingPeer.peerID, "@", channel);
-          // Make all peers close their peer channels
+          // Make all peers close their peer channels: broadcasts to all peers 
+          /*
           socket.broadcast.emit("message", {
+              type: "disconecting",
               from: disconnectingPeer.peerID,
               target: "all",
               payload: { action: "close", message: disconnectingPeer.peerID + " left @" + channel },
           });
+          */
 
           // remove disconnecting peer from connections
           delete connections[channel][disconnectingPeer.peerID];
