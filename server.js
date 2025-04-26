@@ -1,34 +1,12 @@
 //VideoWhisper WebRTC Signaling Server
-const SERVER_VERSION = "2025.04.06";
-const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration, NGINX server integration for RTMP/HLS stream management with stream pin validation and web server notification, STUN/TURN check.";
+const SERVER_VERSION = "2025.04.26";
+const SERVER_FEATURES = "WebRTC Signaling, SSL, TURN/STUN configuration for VideoWhisper HTML5 Videochat, MySQL accounts, MySQL plans, plan limitations for connections/bitrate/resolution/framerate, Account registration integration, NGINX server integration for RTMP/HLS stream management with stream pin validation and web server notification, STUN/TURN check, user pin authentication support, rate limiting, rooms, chat.";
 
 //Configuration
 require('dotenv').config();
 const DEVMODE = ( process.env.NODE_ENV || "development" ) === "development"; //development mode
 
-console.log("VideoWhisper WebRTC Signaling Server", SERVER_VERSION, "\r", SERVER_FEATURES );
-
-//TURN/STUN
-//adjust if using different TURN/STUN servers
-//test TURN/STUN configuration with https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/ and/or https://icetest.info  
-let peerConfig; 
-if (process.env.COTURN_SERVER) peerConfig = {
-  iceServers: [
-  {    
-    urls: [ "stun:" + process.env.COTURN_SERVER ]
-  }, 
-  {   
-    username: process.env.COTURN_USER,   
-    credential: process.env.COTURN_PASSWORD,   
-    urls: [       
-      "turn:" + process.env.COTURN_SERVER + "?transport=udp",       
-      "turn:" + process.env.COTURN_SERVER + "?transport=tcp",       
-     ]
-   }
- ]
-};
-else peerConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-console.log(`Peer configuration: ${JSON.stringify(peerConfig)}`);
+console.log("VideoWhisper Server", SERVER_VERSION, "\r", SERVER_FEATURES );
 
 //Authentication 
 if (process.env.STATIC_TOKEN) console.log("Static token configured", DEVMODE ? process.env.STATIC_TOKEN : ''); else console.log("Static token disabled");
@@ -36,136 +14,147 @@ if (process.env.STATIC_TOKEN) console.log("Static token configured", DEVMODE ? p
 //Account database
 var accounts = {};
 let accountsLoaded = false;
-var accountIssues = {};
 
-const serverUpdateStats = () => {
-  if (DEVMODE) console.log("serverUpdateStats");
-  updateStats();
-};
+//for easier access
+var accountsByName = {};
 
+//Modules
 let nginxModuleInstance;
 
-//If using MySQL, load accounts & plans from the database
-if (process.env.DB_HOST)
-{
-const Database = require('./modules/database.js');
-const db = new Database();
-db.getAccounts()
-  .then(accts => {
-     accounts = accts;
-     accountsLoaded = true;
-     if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts);
+//create function to update accounts, as used in multiple places
+const updateAccounts = () => {
+  if (process.env.DB_HOST) {
+    const Database = require('./modules/database.js');
+    const db = new Database();
+    db.getAccounts()
+      .then(accts => {
+        accounts = accts;
+        accountsLoaded = true;
+
+        // Create a reverse lookup object keyed by account name for quick access
+        accountsByName = {};
+        for (const token in accounts) {
+          const account = accounts[token];
+          if (account.name) {
+            accountsByName[account.name] = account;
+          }
+        }
+
+        if (DEVMODE) console.log("Loaded accounts", Object.keys(accountsByName));
+      
+        if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts, accountsByName);
+
+      })
+      .catch(err => {
+        console.error('Error loading accounts:', err);
+      });
+  } else {
+    console.warn("No DB_HOST configured, accounts not loaded from database");
+  }
+  
+  // Add static account to accounts list if configured in .env
+  // This happens after DB load to ensure it takes precedence
+  if (process.env.STATIC_ACCOUNT && process.env.STATIC_TOKEN) {
+    const staticAccount = process.env.STATIC_ACCOUNT;
+    const staticToken = process.env.STATIC_TOKEN;
     
-  })
-  .catch(err => {
-    console.error('Error loading accounts:', err);
-  });
-}
+    accounts[staticToken] = {
+      name: staticAccount,
+      token: staticToken,
+      properties: {
+        loginURL: process.env.STATIC_LOGIN || null  // Store the STATIC_LOGIN URL if provided
+      },
+      plan: {
+        // STATIC_ACCOUNT plan with generous development limits
+        connections: 100, //  connections at same time
+        totalBitrate: 100000, //  Mbps total account bitrate (all streams)
+        bitrate: 5000,  // kbps video bitrate
+        audioBitrate: 256,   //  kbps audio bitrate
+        width: 1920,    // resolution width
+        height: 1080,   // automatically switched limits for portrait/landscape
+        frameRate: 30,     // frames per second
+        streamPlayers: 100, // NGINX HLS players (per account)
+      }
+    };
+    
+    // Add to accountsByName for quick lookups
+    accountsByName[staticAccount] = accounts[staticToken];
+    
+    accountsLoaded = true;  // Mark as loaded if using only static account
 
-//Enforce SDP (experimental)
-const transform = require('sdp-transform');
-function enforceSdp(sdp, account) {
-  // Enforce maximum resolution and frame rate
-  const maxResolution = 360; // Example: max 360p
-  const maxFrameRate = 15; // Example: max 15 fps
-  const maxBitrate= 750;
-
-  if (DEVMODE) console.log("transformSdp", account, maxResolution, maxFrameRate, maxBitrate);
-
-  const parsedSdp = transform.parse(sdp);
-  const videoMedia = parsedSdp.media.find(media => media.type === 'video');
-  
-	if (videoMedia) {
-    videoMedia.fmtp.forEach((videoFmtp, index) => {
-    const videoCodec = videoMedia.rtp[index].codec;
-    const codecParameters = sdpTransform.parseParams(videoFmtp.config);
-  
-    codecParameters['max-fs'] = maxResolution;
-    codecParameters['max-fr'] = maxFrameRate;
-    codecParameters['max-mbps'] = maxResolution * maxFrameRate; //maximum macroblocks per second
-
-    videoFmtp.config = Object.entries(codecParameters).map(([key, value]) => `${key}=${value}`).join(';');
-
-    // Add bitrate limitation using b=AS attribute
-    videoMedia.bandwidth = [{type: 'AS', limit: maxBitrate}];
-    });
+    if (DEVMODE) console.log("Added static account:", staticAccount);
   }
 
-  return transform.write(parsedSdp);
-}
+  if (accountsLoaded)
+    {
+     if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts, accountsByName);
+     if (DEVMODE) console.log("updateAccounts", accountsLoaded);
+    }
+};
+updateAccounts();
 
-//STUN/TURN Checks
-const { RTCPeerConnection } = require("wrtc");
-
-// Function to test STUN/TURN connectivity
-async function testStunTurn() {
-  return new Promise((resolve) => {
-      const config = peerConfig; // Use existing peerConfig
-
-      if (!config || !config.iceServers || config.iceServers.length === 0) {
-          return resolve({ stun: false, turn: false, error: "No ICE servers configured" });
-      }
-
-      let stunAvailable = false;
-      let turnAvailable = false;
-
-      const peer = new RTCPeerConnection(config);
-
-      const parseCandidateType = (candidate) => {
-        const parts = candidate.split(' ');
-        const typIndex = parts.indexOf('typ');
-        return typIndex > -1 ? parts[typIndex + 1] : null;
-      };
-
-      const isPublicIP = (ip) => {
-        if (!ip) return false;
-        return !(
-          ip.startsWith("10.") ||
-          ip.startsWith("192.168.") ||
-          ip.startsWith("127.") ||
-          ip.startsWith("169.254.") ||
-          /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) // 172.16.0.0 – 172.31.255.255
-        );
-      };
-      
-      peer.onicecandidate = (event) => {
-          if (event.candidate) {
-              const { candidate } = event.candidate;
-              const candidateType = parseCandidateType(candidate);
-
-              if (candidateType === "srflx") stunAvailable = true; // STUN success
-              if (candidateType === "relay") turnAvailable = true; // TURN success
-              if (candidateType === "host" && isPublicIP(candidate.split(" ")[4])) stunAvailable = true; //If the server is  on a public IP with no NAT, STUN may not return srflx because it’s not needed.
-
-          }
-      };
-
-      peer.onicegatheringstatechange = () => {
-          if (peer.iceGatheringState === "complete") {
-              peer.close();
-              resolve({ stun: stunAvailable, turn: turnAvailable });
-          }
-      };
-
-      // Create and set a dummy offer to trigger ICE gathering
-      peer.createDataChannel("test");
-      peer.createOffer()
-          .then((offer) => peer.setLocalDescription(offer))
-          .catch(() => resolve({ stun: false, turn: false, error: "ICE candidate error" }));
-
-      // Timeout to prevent indefinite waiting
-      setTimeout(() => {
-          peer.close();
-          resolve({ stun: stunAvailable, turn: turnAvailable, error: "ICE candidate timeout" });
-      }, 5000);
-  });
-}
-
-//WEBRTC SIGNALING SERVER
+// SERVER
 const express = require('express');
 const app = express();
 const cors = require("cors");
-app.use(express.json(), cors());
+
+// Simple rate limiting implementation that works with older Node versions
+const createRateLimiter = (windowMs, maxRequests) => {
+  const requests = {};
+  
+  return (req, res, next) => {
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    
+    // Clean up old requests
+    for (const storedIp in requests) {
+      if (requests[storedIp].timestamp < now - windowMs) {
+        delete requests[storedIp];
+      }
+    }
+    
+    // Initialize or update request tracking for this IP
+    if (!requests[ip]) {
+      requests[ip] = {
+        count: 1,
+        timestamp: now
+      };
+    } else {
+      requests[ip].count++;
+      if (requests[ip].count > maxRequests) {
+        return res.status(429).send('Too many requests: ' + requests[ip].count + '/' +  (windowMs/1000) +'s. Try again in ' + Math.ceil((windowMs - (now - requests[ip].timestamp)) / 1000) + ' seconds.');
+      }
+    }
+    
+    next();
+  };
+};
+
+// Simple security headers middleware compatible with older Node versions
+const addSecurityHeaders = (req, res, next) => {
+  // Basic security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  
+  // Only add strict transport security in production
+  if (!DEVMODE) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+  
+  next();
+};
+
+// Apply the middlewares
+app.use(express.json());
+app.use(cors({
+  origin: true, // Allow all origins
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+app.use(addSecurityHeaders);
+
 const fs = require('fs');
 const https = require('https');
 
@@ -177,19 +166,43 @@ const options = {
 };
 const server = https.createServer(options, app);
 
-const io = require('socket.io')(server);
-io.eio.pingTimeout = 60000; // 1 minute
-io.eio.pingInterval = 5000;  // 5 seconds
+// Suppress deprecation warnings in production
+if (!DEVMODE) {
+  process.noDeprecation = true;
+}
+
+// Configure Socket.IO with modern options
+const io = require('socket.io')(server, {
+  cors: {
+    origin: '*', // Match your CORS settings from Express
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  maxHttpBufferSize: 1e8, // 100MB for large data transmission if needed
+  pingTimeout: 60000, // 1 minute
+  pingInterval: 5000, // 5 seconds
+  transports: ['websocket', 'polling'] // Prefer WebSocket, fallback to polling
+});
+
+// Avoid using deprecated properties
+// io.eio.pingTimeout = 60000; // This was using deprecated properties
+// io.eio.pingInterval = 5000;  // This was using deprecated properties
 
 // API ENDPOINT TO DISPLAY THE CONNECTION TO THE SIGNALING SERVER
 let connections = {};
-let channels = {};
+let channels = {}; //webrtc channels are for streaming
 let stats = {};
+let accountIssues = {};
 
+// Import modules
+const webrtcModule = require('./modules/webrtc.js')(io, connections, channels, stats, DEVMODE, accounts, accountIssues);
+
+// Pass the required dependencies to the room module
+const roomModule = require('./modules/room.js')(io, webrtcModule, connections, channels, stats, DEVMODE);
 
 //[GET] https://yourDomain:PORT/
-app.get("/", async (req, res) => { // Mark function as async 
- 
+app.get("/", async (req, res) => { // Mark function as async
+
   let result = {
     "server": "VideoWhisper WebRTC",
     "version": SERVER_VERSION,
@@ -198,30 +211,33 @@ app.get("/", async (req, res) => { // Mark function as async
   };
 
   try {
-      const stunTurnStatus = await testStunTurn(); // Check STUN/TURN availability
+      // Use the testStunTurn function from the webrtc module
+      const stunTurnStatus = await webrtcModule.testStunTurn();
 
-      let testResult = 
-     {
+      let testResult = {
         "webrtc-test": stunTurnStatus.error ? `Error: ${stunTurnStatus.error}` : "STUN/TURN check passed",
         "stun": stunTurnStatus.stun,
         "turn": stunTurnStatus.turn
-    };
+      };
+      
+      // Add the timeSinceTested as webrtcTestAge if available
+      if (stunTurnStatus.timeSinceTested !== undefined) {
+        testResult.webrtcTestAge = stunTurnStatus.timeSinceTested;
+      }
 
       //add these properties to the existing result object
       result = { ...result, ...testResult };
 
-
       if (DEVMODE) console.log("API /", result);
       res.json(result);
-
   } catch (error) {
-     let  testResult = {
+      let testResult = {
         "webrtc-test": "Error while checking STUN/TURN",
         "stun": false,
         "turn": false
-    };
+      };
 
-    result = { ...result, ...testResult };
+      result = { ...result, ...testResult };
 
       console.error("Error checking STUN/TURN:", error, result);
       res.json(result);
@@ -258,6 +274,11 @@ if (DEVMODE || API_KEY)
 
     const apikey = req.query.apikey;
     const token = req.query.token;
+
+    // Validate input parameters
+    if (token && !/^[a-zA-Z0-9_\-\.]+$/.test(token)) {
+      return res.status(400).send('Invalid token format');
+    }
 
     if (!token && apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key and no account token');
 
@@ -337,26 +358,24 @@ if (DEVMODE || API_KEY)
       if (apikey != API_KEY && !DEVMODE) return res.status(401).send('Invalid API key');
       else
       {
-        if (process.env.DB_HOST)
-        {
-          const Database = require('./modules/database.js');
-          const db = new Database();
-          db.getAccounts()
-            .then(accts => {
-              accounts = accts;
-              accountsLoaded = true;
-
-              if (nginxModuleInstance) nginxModuleInstance.updateAccounts(accounts); //also update for nginx module
-            })
-            .catch(err => {
-              console.error('Error loading accounts:', err);
-            });
-        }
-  
+        updateAccounts();
         res.json({ "status": "Updating Accounts" });
       }
     });
 }
+
+// Define serverUpdateStats function before using it in the Nginx module
+const serverUpdateStats = () => {
+  if (DEVMODE) console.log("serverUpdateStats");
+  
+  // Use webrtc module to update stats
+  const accountStats = webrtcModule.updateStats();
+  
+  // Update our global stats object
+  stats = accountStats;
+  
+  return stats;
+};
 
 //Nginx RTMP/HLS module
 if (process.env.NGINX_HOST) {
@@ -374,412 +393,287 @@ if (process.env.NGINX_HOST) {
 }
 
 
-// AUTHENTICATION MIDDLEWARE
-const authenticate = (socket, next) => {
-  const token = socket.handshake.auth.token;
-  const staticToken = process.env.STATIC_TOKEN || '';
+// Add a simple authentication rate limiter
+const authRateLimiter = createRateLimiter(
+  10 * 60 * 1000, // 10 minutes window
+  DEVMODE ? 120 : 30 // Higher limit in development
+);
 
-  if (staticToken) if (token === staticToken) 
-  {
-    socket.account = '_static';
-    socket.token = staticToken;
-
-    if (DEVMODE) console.log ("Authenticated with STATIC_TOKEN #", socket.id);
-    return next();
+// Apply the authentication rate limiter to socket.io connections
+// by modifying the authenticate middleware to use it
+const authenticate = async (socket, next) => {
+  try {
+    // Simple rate limiting for socket authentication
+    const mockReq = { ip: socket.handshake.address };
+    const mockRes = {
+      status: (code) => ({
+        send: (message) => {
+          next(new Error(message));
+          return mockRes;
+        }
+      })
+    };
+    const mockNext = () => {
+      // Continue with normal authentication flow
+      authenticateSocket(socket, next);
+    };
+    
+    // Apply rate limiting
+    authRateLimiter(mockReq, mockRes, mockNext);
+  } catch (error) {
+    console.error('Rate limiting error:', error);
+    next(new Error(DEVMODE ? `ERROR: ${error.message}` : "ERROR: Authentication error"));
   }
-
-  if (!accounts) return next(new Error("ERROR: No static token configured or accounts loaded, yet"));
-
-  const account = accounts[token];
-
-  if (account) {
-    socket.account = account.name;
-    socket.token = token;
-
-    if (account.plan.connections) if (stats[account.name]) if (stats[account.name].connections >= account.plan.connections) 
-    {
-      if (DEVMODE) console.warn(`Connection limit reached for ${account.name} #`, stats[account.name].connections, socket.id );
-      return next(new Error('ERROR: Connection limit exceeded'));
-    } 
-
-    if (account.plan.totalBitrate) if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate >= account.plan.totalBitrate )
-    {
-      if (DEVMODE) console.warn(`Total bitrate limit reached for ${account.name} `, stats[account.name].bitrate, socket.id );
-      return next(new Error('ERROR: Bitrate limit exceeded'));
-    } 
-
-    if (account.properties.suspended) {
-      if (DEVMODE) console.warn(`Suspended account ${account.name} `, socket.id);
-      return next(new Error('ERROR: Suspended account'));
-    } 
-
-    //Accept connection
-    if (DEVMODE) console.log (`Authenticated with token from account ${account.name} #`, socket.id);
-    next();
-
-
-  } else {
-    next(new Error("ERROR: Authentication error"));
-  }
-
 };
-io.use(authenticate);
 
-//stats for accounts, channels
-function updateStats()
-{
+// Move the actual socket authentication logic to a separate function
+const authenticateSocket = async (socket, next) => {
+  try {
+    // Get authentication parameters from handshake
+    const token = socket.handshake.auth.token;
+    const account = socket.handshake.auth.account;
+    const user = socket.handshake.auth.user;
+    const pin = socket.handshake.auth.pin;
+    const staticToken = process.env.STATIC_TOKEN || '';
+    const hideDetailedErrors = process.env.EXTRA_SECURITY === 'true' && !DEVMODE;
 
-  let accountStats = {};
-  for (let channel in connections) //for each channel
-  {
-    for (let peerID in connections[channel]) //for each connection
-    {
-      let account = connections[channel][peerID].account;
-      let params = channels[channel] || { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0};
-
-     // if (DEVMODE) console.log("-updateStats ", channel, params);
-
-      if (account in accountStats) 
-      {
-        accountStats[account]['connections']++;
-        accountStats[account]['bitrate']+= params['bitrate'];
-        accountStats[account]['audioBitrate']+= params['audioBitrate'];
-      }
-      else accountStats[account]= { 'connections': 1, 'bitrate': params['bitrate'] , 'audioBitrate': params['audioBitrate'], 'players': 0, 'broadcasters': 0 };
-
-      if (connections[channel][peerID].type == 'player') accountStats[account]['players']++;
-      if (connections[channel][peerID].type == 'broadcaster') accountStats[account]['broadcasters']++;
+    // Validate input parameters (while providing detailed errors in DEVMODE)
+    if (token && typeof token !== 'string') {
+      const message = "Invalid token parameter";
+      if (DEVMODE) console.log(`Authentication error: ${message}`);
+      return next(new Error(DEVMODE ? `ERROR: ${message}` : "ERROR: Authentication error"));
+    }
+    
+    if (token && !/^[a-zA-Z0-9_\-\.]+$/.test(token)) {
+      const message = "Invalid token format";
+      if (DEVMODE) console.log(`Authentication error: ${message}`);
+      return next(new Error(DEVMODE ? `ERROR: ${message}` : "ERROR: Authentication error"));
+    }
+    
+    if (account && typeof account !== 'string') {
+      const message = "Invalid account parameter";
+      if (DEVMODE) console.log(`Authentication error: ${message}`);
+      return next(new Error(DEVMODE ? `ERROR: ${message}` : "ERROR: Authentication error"));
+    }
+    
+    if (account && !/^[a-zA-Z0-9_\-\.]+$/.test(account)) {
+      const message = "Invalid account format";
+      if (DEVMODE) console.log(`Authentication error: ${message}`);
+      return next(new Error(DEVMODE ? `ERROR: ${message}` : "ERROR: Authentication error"));
     }
 
-    //clean up connections for channel if no peers
-    if (connections[channel] && Object.keys(connections[channel]).length == 0) delete connections[channel];
+    // Static token authentication (highest priority)
+    if (staticToken && token === staticToken) {
+      socket.account = '_static';
+      socket.token = staticToken;
+
+      if (DEVMODE) console.log("Authenticated with STATIC_TOKEN #", socket.id);
+      return next();
+    }
+
+    // Account/user/pin authentication
+    if (account && user && pin) {      
+      // Check if the account exists
+      if (!accountsByName[account]) {
+        const errorMsg = hideDetailedErrors ? "Authentication failed" : "Account not found";
+        return next(new Error(`ERROR: ${errorMsg}`));
+      }
+
+      // Check if the account supports loginURL authentication
+      if (!accountsByName[account].properties || !accountsByName[account].properties.loginURL) {
+        const errorMsg = hideDetailedErrors ? "Authentication failed" : "This account does not support user/pin authentication";
+        return next(new Error(`ERROR: ${errorMsg}`));
+      }
+
+      try {
+        // Use the account's login URL and token
+        const loginURL = accountsByName[account].properties.loginURL;
+        const tokenToUse = accountsByName[account].token || '';
+        
+        // Authenticate the user with the pin
+        const authResult = await authenticateUserPin(account, user, pin, loginURL, tokenToUse);
+        
+        if (authResult.login === true) {
+          // Authentication successful
+          socket.account = account;
+          socket.token = accountsByName[account].token;
+          socket.user = user;
+
+          if (DEVMODE) console.log(`Authenticated with user/pin for account ${account} user ${user} #`, socket.id);
+
+          // Check account limits 
+            const accountInfo = accountsByName[account];
+            const limitError = checkAccountLimits(account, accountInfo);
+            if (limitError) {
+              if (DEVMODE) console.warn(`Limit check failed for ${account}: ${limitError}`);
+              const errorMsg = hideDetailedErrors ? "Authentication failed" : limitError;
+              return next(new Error(`ERROR: ${errorMsg}`));
+            }
+
+          return next();
+        } else {
+          // Authentication failed
+          const errorMessage = authResult.message || 'User authentication failed';
+          if (DEVMODE) console.warn(`Authentication failed for ${account}/${user}: ${errorMessage}`);
+          const errorMsg = hideDetailedErrors ? "Authentication failed" : errorMessage;
+          return next(new Error(`ERROR: ${errorMsg}`));
+        }
+      } catch (error) {
+        console.error('Error during user/pin authentication:', error);
+        return next(new Error('ERROR: Authentication error'));
+      }
+    }
+
+    // Traditional token-based authentication (fallback for backward compatibility)
+    if (!accounts) return next(new Error("ERROR: No static token configured or accounts loaded, yet"));
+
+    const accountInfo = accounts[token];
+
+    if (accountInfo) {
+      socket.account = accountInfo.name;
+      socket.token = token;
+
+      // Check account limits
+      const limitError = checkAccountLimits(accountInfo.name, accountInfo);
+      if (limitError) {
+        if (DEVMODE) console.warn(`Limit check failed for ${accountInfo.name}: ${limitError}`);
+        const errorMsg = hideDetailedErrors ? "Authentication failed" : limitError;
+        return next(new Error(`ERROR: ${errorMsg}`));
+      }
+
+      // Accept connection
+      if (DEVMODE) console.log(`Authenticated with token from account ${accountInfo.name} #`, socket.id);
+      return next();
+
+    } else {
+      return next(new Error("ERROR: Authentication error"));
+    }
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return next(new Error(DEVMODE ? `ERROR: ${error.message}` : "ERROR: Authentication error"));
+  }
+};
+
+// Function to authenticate user with account, user, pin from account.loginURL integration
+// loginURL and token parameters are now provided by the authenticateSocket function
+const authenticateUserPin = async (account, user, pin, loginURL, token) => {
+  // No need to determine login URL or token - they are provided as parameters
+  const isStaticAccount = account === process.env.STATIC_ACCOUNT;
+  
+  // If no loginURL was provided, authentication can't proceed
+  if (!loginURL) {
+    const message = 'Login URL not available';
+    if (DEVMODE) console.log(`Authentication failed: ${message}`);
+    return { login: false, message: DEVMODE ? message : 'Authentication failed' };
   }
 
-  //update channel peers
-  for (let channel in channels)
-  if (channels[channel]) {
-    channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
-
-    //delete if no peers and more than 5 minutes old
-    if (channels[channel]['peers'] == 0 && Date.now() - channels[channel]['time'] > 300000) delete channels[channel];
-  }
-
-        //update account issues
-        for (let account in accountIssues)
-          for (let issue in accountIssues[account])
-          {
-            if (!accountStats[account]) accountStats[account] = {};
-            if (!accountStats[account]['issues']) accountStats[account]['issues'] = {};
-            accountStats[account]['issues'][issue] = accountStats[account]['issues'][issue] ? accountStats[account]['issues'][issue] + accountIssues[account][issue] : accountIssues[account][issue];
-          }
-
-  if (nginxModuleInstance) accountStats = nginxModuleInstance.addStats(accountStats); //include nginx stats
-
-  stats = accountStats;
-  if (DEVMODE) console.log("updateStats", stats);
-}
-
-const updateIssues = (issues, account) =>
-  {
-    if (!Array.isArray(issues)) return;
-    if (!accountIssues[account]) accountIssues[account] = {};   
-
-    issues.forEach(issue => {
-        accountIssues[account][issue] = accountIssues[account][issue] ? accountIssues[account][issue] + 1 : 1;
+  // Make the HTTP request to authenticate
+  try {
+    const fetch = require('node-fetch');
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    
+    const response = await fetch(loginURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+ //     account: account, //acounts are identified by token
+        token: token,
+        user: user,
+        pin: pin
+      }),
+      signal: controller.signal
     });
+    
+    clearTimeout(timeout);
 
+    if (!response.ok) {
+      const message = `Server responded with ${response.status}: ${response.statusText}`;
+      if (DEVMODE) console.log(`Authentication failed: ${message}`);
+      return { login: false, message: DEVMODE ? message : 'Authentication failed' };
+    }
+
+    const result = await response.json();
+    if (DEVMODE && isStaticAccount) {
+      console.log(`Static account authentication result for ${account}/${user}:`, result);
+    }
+    return result;
+  } catch (error) {
+    console.error(`Error authenticating with ${isStaticAccount ? 'static account' : 'user/pin'}:`, error);
+    return { 
+      login: false, 
+      message: DEVMODE ? `Authentication error: ${error.message}` : 'Authentication failed'
+    };
   }
+};
+
+// Helper function to check account limits
+// Returns null if all checks pass, or an error message if any limits are exceeded
+const checkAccountLimits = (accountName, accountInfo) => {
+  // Check connection limit
+  if (accountInfo.plan.connections && 
+      stats[accountName] && 
+      stats[accountName].connections >= accountInfo.plan.connections) {
+    return 'Account connection limit exceeded:' + stats[accountName].connections + '/' + accountInfo.plan.connections;
+  }
+  
+  // Check bitrate limit
+  if (accountInfo.plan.totalBitrate && 
+      stats[accountName] && 
+      stats[accountName].bitrate + stats[accountName].audioBitrate >= accountInfo.plan.totalBitrate) {
+    return 'Account bitrate limit exceeded: ' + accountInfo.plan.totalBitrate + ' kbps';
+  }
+  
+  // Check if account is suspended
+  if (accountInfo.properties.suspended) {
+    return 'Account is suspended: ' + accountName;
+  }
+  
+  // All checks passed
+  return null;
+};
+
+// Use the authentication middleware
+io.use(authenticate);
 
 // SIGNALING LOGIC
 io.on("connection", (socket) => {
-
   if (DEVMODE) console.log("Socket connected #", socket.id, "from account", socket.account);
-
-  socket.on("subscribe", (peerID, channel) => {
-  //players call subscribe to channel, to get notified when published
-
-      if (DEVMODE) console.log("socket.on(subscribe", peerID, channel);
-
-      if (!channel) channel = 'VideoWhisper';
-
-       socket.join(channel);
-       if (!(channel in connections)) connections[channel] = {};
-
-      socket.peerID = peerID;
-      socket.channel = channel;
-
-      let found = false;
-      if (peerID in connections[channel]) {
-        found = true;
-        /*
-              // Make sure that the hostname is unique, if the hostname is already in connections, send an error and disconnect
-          socket.emit("uniquenessError", {
-              from: "_channel_",
-              to: peerID,
-              message: `${peerID} already in @${channel}.`,
-          });
-          console.log(`ERROR: ${peerID} is already connected @${channel}`);
-          socket.disconnect(true);
-          */
-         if (DEVMODE) console.warn(` ${peerID} is already subscribed to @${channel}`);
-      } else {
-
-        //get channel params
-        let params = channels[channel]; 
-        let account = accounts[socket.token];
-
-        if (params && account)
-        {
-          let issues = [];
-
-          if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate + params['bitrate'] + params['audioBitrate'] > account.plan.totalBitrate ) issues.push('totalBitrate' );
-          if (stats[account.name]) if (stats[account.name].conections > account.plan.conections ) issues.push( 'conections' );
-
-          if (issues.length > 0)
-          {
-          
-            if (DEVMODE) console.warn(`Subscribe rejected for ${account.name}`, params, account.plan );
-
-            socket.emit("subscribeError", {
-              from: "_server_",
-              to: peerID,
-              message: `Unfit: ${issues.join(', ')}.`,
-          });
-
-          //update account issues
-          updateIssues(issues, account.name);
-      
-          if (found)
-          {
-            //leave channel and remove from connections
-            socket.leave(channel);
-            delete connections[channel][peerID];
-
-            if (DEVMODE) console.warn(`${peerID} unsubscribed from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
-          }
-
-          //update channel connections
-            if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
-
-            return ;
-
-          }
-
-        }
-
-        if (!found)
-        {
-        if (DEVMODE) console.log(` ${peerID} subscribed to @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length + 1}`);
-            
-          // Add new player peer
-          const newPeer = { socketId: socket.id, peerID, type: "player", account: socket.account };
-          connections[channel][peerID] = newPeer;
-        }
-
-          // Let broadcaster know about the new peer player (to send offer)
-          socket.to(channel).emit("message", {
-              type: "peer",
-              from: peerID,
-              target: "all",
-              peerID: peerID,
-              });
-
-       }
-
-         //update subscriber count
-         if (channels[channel]) channels[channel]['peers'] = Object.keys(connections[channel]).length;
-    
-      updateStats();
-  });
-
-  socket.on("publish", (peerID, channel, params) => {
-      //broadcaster calls publish when ready to publish channel (stream)
-
-      if (DEVMODE) console.log("socket.on(publish", peerID, channel, params);
-
-      if (!channel) return;
-
-      if (! (channel in connections) ) connections[channel] = {};
-
-      let found = false;
-      if (peerID in connections[channel]) {
-        found = true;
-        /*
-        socket.emit("uniquenessError", {
-            from: "_channel_",
-            to: peerID,
-            message: `${peerID} already in @${channel}.`,
-        });
-        console.log(`ERROR: ${peerID} is already connected @${channel}`);
-        socket.disconnect(true);
-        */
-       if (DEVMODE) console.warn(`${peerID} already published in @${channel}. Updating...`);
-     }
-
-      if (params)
-      { 
-         params['publisher'] = peerID;
-         params['time'] = Date.now();
-         let account = accounts[socket.token];
-
-        //for accounts, check if stream parameters are within account plan limits
-         if (account)
-         {
-          if (DEVMODE) console.warn(`socket.on(publish account ${account.name} plan`, account.plan );
-
-          let issues = [];
-
-          //stream limits
-          if (params['width'] >= params['height'])
-          {
-          //landscape: width > height
-          if (account.plan.width) if (params['width'] > account.plan.width) issues.push('width');
-          if (account.plan.height) if (params['height'] > account.plan.height) issues.push('height' );
-          }
-          else {
-            //portrait (inverted on phones): height > width, swap limits
-            if (account.plan.width) if (params['height'] > account.plan.width) issues.push('height');
-            if (account.plan.height) if (params['width'] > account.plan.height) issues.push('width' );  
-                    
-            //if height or width in issues, also add 'portrait' issue
-            if (issues.includes('width') || issues.includes('height')) issues.push('portrait');
-          }
-
-          if (account.plan.bitrate) if (params['bitrate'] > account.plan.bitrate) issues.push( 'bitrate' );
-          if (account.plan.frameRate) if (params['frameRate'] > account.plan.frameRate) issues.push('frameRate' );
-          if (account.plan.audioBitrate) if (params['audioBitrate'] > account.plan.audioBitrate) issues.push('audioBitrate' );
-
-          //cummulative limits
-          if (stats[account.name]) if (stats[account.name].bitrate + stats[account.name].audioBitrate + params['bitrate'] + params['audioBitrate'] > account.plan.totalBitrate ) issues.push('totalBitrate' );
-          if (stats[account.name]) if (stats[account.name].conections > account.plan.conections ) issues.push( 'conections' );
-
-          if (issues.length > 0)
-          {
-            if (DEVMODE) console.warn(`Publish rejected for ${account.name}`, issues, params, account.plan );
-
-            socket.emit("publishError", {
-              from: "_server_",
-              to: peerID,
-              message: `Unfit: ${issues.join(', ')}.`,
-          });
-
-          //add to account issues
-          updateIssues(issues, account.name);
-          
-          if (found)  //leave channel and remove from connections
-          {
-            socket.leave(channel);
-            delete connections[channel][peerID];
-
-            if (DEVMODE) console.warn(`${peerID} unpublished from @${channel}. Total connections subscribed to @${channel}: ${Object.keys(connections[channel]).length}`);
-          }
-
-          if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
-
-            return ;
-
-          }
-
-         }
-
-      }
-
-      //save channel params
-      channels[channel] = params ? params : { width: 0, height: 0, bitrate: 0, frameRate:0, audioBitrate: 0, publisher: peerID, time: Date.now()};
-
-      if (!found) 
-      {
-      socket.join(channel); //broadcaster subscribes to receive new peers
-      if (!(channel in connections)) connections[channel] = {};
-
-      socket.peerID = peerID;
-      socket.channel = channel;
-
-      // Add new player peer
-      const newPeer = { socketId: socket.id, peerID, type: "broadcaster", account: socket.account };
-      connections[channel][peerID] = newPeer;
-      }
-
-      // Let broadcaster know about current peers (to send offers)
-      socket.send({ type: "peers", from: "_channel_", target: peerID, 'peers': Object.values(connections[channel]), 'peerConfig' : peerConfig }); 
-      
-
-      //
-      if (channels[channel]) channels[channel]['peers'] = connections[channel] ? Object.keys(connections[channel]).length : 0;
-
-      //update stats after publisher joins
-      updateStats();
-  });
-
-  socket.on("message", (message) => {
-    if (DEVMODE) console.log('socket.on(message', message.type, message.from, message.target );
-
-      // Send message to all peers except the sender
-      socket.to(Array.from(socket.rooms)[1]).emit("message", message);
-  });
-
-  socket.on("messagePeer", (message) => {
-
-    const channel = Array.from(socket.rooms)[1];
-
-    if (!channel) 
-    {
-        console.log(socket.id, "ERROR socket.on(messagePeer: no channel", socket.rooms);
-        return;
-    }
-
-    //sdp transform for descriptions
-    if (process.env.ENFORCE_SDP) if (message.type === 'offer' || message.type === 'answer') {
-      message.content.sdp = enforceSdp(message.content.sdp, socket.account);
-    }
-
-    if (DEVMODE) console.log('socket.on(messagePeer', message.type, ":", message.from,">", message.target, "@", channel );
-
-      const { target } = message;
-      const targetPeer = connections[channel][target];
-      if (targetPeer) {
-          io.to(targetPeer.socketId).emit("message", { ...message });
-      } else {
-          console.log(`Target ${target} not found in ${channel}`);
-      }
-
-  });
+  
+  // Setup WebRTC event handlers from module
+  webrtcModule.setupSocketHandlers(socket);
+  
+  // Setup Room event handlers if user is authenticated with user/pin
+  if (socket.user) {
+    roomModule.setupRoomHandlers(socket);
+    if (DEVMODE) console.log(`Room handlers set up for user ${socket.user}`);
+  }
 
   socket.on("disconnecting", () => {
+    //using disconnecting because socket.rooms not available on disconnect event
+    const channel = Array.from(socket.rooms)[1];
 
-     //using disconnecting because socket.rooms not available on disconnect event
-      const channel = Array.from(socket.rooms)[1];
+    if (!channel || !connections[channel]){
+      console.log(socket.id, "has disconnected (no channel) socket.rooms:", socket.rooms);
+      
+      return;
+    }
+    const disconnectingPeer = Object.values(connections[channel]).find((peer) => peer.socketId === socket.id);
 
-      if (!channel || !connections[channel]){
-            console.log(socket.id, "has disconnected (no channel) socket.rooms:", socket.rooms);
-            return;
-      }
-      const disconnectingPeer = Object.values(connections[channel]).find((peer) => peer.socketId === socket.id);
+    if (disconnectingPeer) {
+      if (DEVMODE) console.log("Disconnected", socket.id, ":" ,  disconnectingPeer.peerID, "@", channel);
+      // remove disconnecting peer from connections
+      delete connections[channel][disconnectingPeer.peerID];
+    }
+    else {
+      console.log(socket.id, " disconnected (unregistered peer from", channel);
+    }
 
-      if (disconnectingPeer) {
-         if (DEVMODE) console.log("Disconnected", socket.id, ":" ,  disconnectingPeer.peerID, "@", channel);
-          // Make all peers close their peer channels: broadcasts to all peers 
-          /*
-          socket.broadcast.emit("message", {
-              type: "disconecting",
-              from: disconnectingPeer.peerID,
-              target: "all",
-              payload: { action: "close", message: disconnectingPeer.peerID + " left @" + channel },
-          });
-          */
 
-          // remove disconnecting peer from connections
-          delete connections[channel][disconnectingPeer.peerID];
-        }
-        else {
-          console.log(socket.id, " disconnected (unregistered peer from", channel);
-       }
-
-       //update live stats after removing connection
-       updateStats();
-
+    //update live stats after removing connection
+    serverUpdateStats();
   });
-
 });
 
 //handle exceptions and exit gracefully 
@@ -787,6 +681,46 @@ process.on('unhandledRejection', (reason, promise) => {
   console.log('Unhandled Rejection at:', promise, 'reason:', reason);
   process.exit(1);
 });
+
+// Add graceful shutdown
+// Flag to track shutdown in progress to prevent double shutdown
+let isShuttingDown = false;
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+function gracefulShutdown() {
+  // Prevent multiple shutdown attempts
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('Received shutdown signal. Allow 10s for graceful shutdown. Closing connections...');
+  
+  // Close all socket.io connections first
+  if (io) {
+    const sockets = io.sockets.sockets;
+    if (sockets) {
+      // Disconnect all Socket.IO clients
+      sockets.forEach(socket => {
+        if (socket.connected) {
+          socket.disconnect(true);
+        }
+      });
+    }
+  }
+  
+  // Then close the server
+  server.close(() => {
+    console.log('Server closed successfully');
+    process.exit(0);
+  });
+  
+  // Force close after 10 seconds if not closed gracefully
+  setTimeout(() => {
+    console.log('Forcing server shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+}
 
 // START SERVER
 const PORT = process.env.PORT || 3000; //port to listen on

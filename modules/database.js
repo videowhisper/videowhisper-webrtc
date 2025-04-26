@@ -62,7 +62,33 @@ class Database {
     });
   }
   
-
 }
 
 module.exports = Database;
+
+/* SQL structure of tables used in this module:
+DROP TABLE IF EXISTS accounts;
+  CREATE TABLE accounts (
+    id INT NOT NULL AUTO_INCREMENT,
+    name VARCHAR(255) NOT NULL,
+    token VARCHAR(255) NOT NULL,
+    properties TEXT NOT NULL,
+    planId INT,
+    meta TEXT,
+    contactId INT,
+    created INT,
+    PRIMARY KEY (id),
+    UNIQUE KEY (token), 
+    KEY (planId),
+    KEY (contactId),
+    KEY (created)
+  );
+
+  DROP TABLE IF EXISTS plans;
+  CREATE TABLE plans (
+    id INT NOT NULL AUTO_INCREMENT,
+    name VARCHAR(255) NOT NULL,
+    properties TEXT NOT NULL,
+    PRIMARY KEY (id)
+  );
+*/
